@@ -28,7 +28,6 @@ except ValueError as exc:
 
 filtered_df = page_data["filtered_df"]
 analysis_df = page_data["analysis_df"]
-selected_confidence = page_data["selected_confidence"]
 
 
 st.header("A. Data Quality Check")
@@ -45,7 +44,7 @@ if duplicate_months.empty:
     st.success("No duplicated month_label values found in the current view.")
 else:
     st.warning("Duplicated month_label values found in the current view.")
-    st.dataframe(duplicate_months, use_container_width=True, hide_index=True)
+    st.dataframe(duplicate_months, width="stretch", hide_index=True)
 
 if missing_months:
     st.warning("Missing months found in the current month sequence.")
@@ -59,18 +58,30 @@ if analysis_df.empty:
 
 st.header("B. Raw Data")
 
-st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+source_columns = ["source_name", "source_url", "confidence"]
+raw_display_columns = [
+    column for column in filtered_df.columns if column not in source_columns
+] + [column for column in source_columns if column in filtered_df.columns]
+st.dataframe(
+    filtered_df[raw_display_columns],
+    width="stretch",
+    hide_index=True,
+)
 
-if selected_confidence == "all":
-    st.caption(
-        "Raw Data shows all confidence levels. Probability sections still exclude low-confidence rows."
-    )
+st.caption(
+    "The confidence filter changes Raw Data visibility only. Confidence is source "
+    "metadata and does not change probability weights."
+)
 
 
 st.header("C. Primary Category Probability")
 
-category_probability = calculate_probability(analysis_df, "primary_category")
-st.dataframe(category_probability, use_container_width=True, hide_index=True)
+category_probability = calculate_probability(
+    analysis_df,
+    "primary_category",
+    weight_column="weight",
+)
+st.dataframe(category_probability, width="stretch", hide_index=True)
 
 if not category_probability.empty:
     category_fig = px.pie(
@@ -80,7 +91,7 @@ if not category_probability.empty:
         title="Empirical Probability by Primary Category",
     )
     category_fig.update_traces(textinfo="percent+label")
-    st.plotly_chart(category_fig, use_container_width=True)
+    st.plotly_chart(category_fig, width="stretch")
 
 
 st.header("D. Happening Benefits")
@@ -90,4 +101,4 @@ happening_df = find_happening_benefits(filtered_df)
 if happening_df.empty:
     st.info("No rows with end_date = Happening in the current view.")
 else:
-    st.dataframe(happening_df, use_container_width=True, hide_index=True)
+    st.dataframe(happening_df, width="stretch", hide_index=True)

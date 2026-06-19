@@ -5,6 +5,7 @@ from src.conditional_predictor import (
     DEFAULT_COOLDOWN_CONFIG,
     calculate_conditional_sub_category_prediction_with_config,
 )
+from src.data_loader import expand_components
 from src.global_predictor import calculate_global_path_prediction
 
 
@@ -50,23 +51,27 @@ def run_walk_forward_backtest(
         conditional_df = calculate_conditional_sub_category_prediction_with_config(
             train_df,
             cooldown_config=cooldown_config,
+            parent_primary_prediction_df=adjusted_df,
+            predicted_next_month=adjusted_prediction.predicted_next_month,
         )
         global_path_df = calculate_global_path_prediction(adjusted_df, conditional_df)
 
         actual_primary_category = actual_row["primary_category"]
-        actual_primary_sub_category = get_actual_sub_category(actual_row)
+        actual_primary_sub_categories = get_actual_sub_categories(actual_row)
         predicted_primary_category = get_top_primary_category(adjusted_df)
         actual_path_rank = get_actual_path_rank(
             global_path_df,
             actual_primary_category,
-            actual_primary_sub_category,
+            actual_primary_sub_categories,
         )
 
         rows.append(
             {
                 "target_month": actual_row["month_label"],
                 "actual_primary_category": actual_primary_category,
-                "actual_primary_sub_category": actual_primary_sub_category,
+                "actual_primary_sub_category": "|".join(
+                    actual_primary_sub_categories
+                ),
                 "predicted_primary_category": predicted_primary_category,
                 "category_top1_hit": int(
                     predicted_primary_category == actual_primary_category
@@ -84,18 +89,19 @@ def prepare_backtest_data(df: pd.DataFrame) -> pd.DataFrame:
         "month_label",
         "primary_category",
         "primary_sub_category",
-        "confidence",
+        "is_mixed",
+        "mixed_components",
+        "is_all_role",
+        "all_role_components",
+        "weight",
     ]
     if df.empty or any(column not in df.columns for column in required_columns):
         return pd.DataFrame()
 
     backtest_df = df.copy()
-    backtest_df["confidence"] = backtest_df["confidence"].str.lower()
-    backtest_df["primary_category"] = backtest_df["primary_category"].str.lower()
-    backtest_df["primary_sub_category"] = backtest_df["primary_sub_category"].str.lower()
-    backtest_df = backtest_df[backtest_df["confidence"] != "low"]
-    backtest_df = backtest_df[backtest_df["primary_category"] != ""]
-    backtest_df = backtest_df[backtest_df["primary_sub_category"] != ""]
+    backtest_df = backtest_df[
+        backtest_df["primary_category"].isin({"role", "non_role", "both"})
+    ]
 
     month_dates = pd.to_datetime(
         backtest_df["month_label"],
@@ -115,32 +121,27 @@ def get_top_primary_category(adjusted_df: pd.DataFrame) -> str:
     return str(adjusted_df.iloc[0]["primary_category"])
 
 
-def get_actual_sub_category(actual_row: pd.Series) -> str:
-    actual_primary_category = actual_row["primary_category"]
-    if actual_primary_category == "mixed":
-        return "mixed"
-    if actual_primary_category == "all_role":
-        return "all_role"
-
-    return actual_row["primary_sub_category"]
+def get_actual_sub_categories(actual_row: pd.Series) -> list[str]:
+    return [record["component"] for record in expand_components(actual_row)]
 
 
 def get_actual_path_rank(
     global_path_df: pd.DataFrame,
     actual_primary_category: str,
-    actual_primary_sub_category: str,
+    actual_primary_sub_categories: list[str],
 ) -> int:
-    if global_path_df.empty:
+    if global_path_df.empty or not actual_primary_sub_categories:
         return 999
 
     ranked_df = global_path_df.reset_index(drop=True)
-    if actual_primary_category == "mixed":
-        matches = ranked_df[ranked_df["primary_category"] == actual_primary_category]
-    else:
-        matches = ranked_df[
-            (ranked_df["primary_category"] == actual_primary_category)
-            & (ranked_df["primary_sub_category"] == actual_primary_sub_category)
-        ]
+    matches = ranked_df[
+        (ranked_df["primary_category"] == actual_primary_category)
+        & (
+            ranked_df["primary_sub_category"].isin(
+                actual_primary_sub_categories
+            )
+        )
+    ]
     if matches.empty:
         return 999
 

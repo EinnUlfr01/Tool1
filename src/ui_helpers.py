@@ -40,9 +40,9 @@ def render_sidebar_filters(raw_df):
 
 
 def prepare_filtered_data(raw_df, selected_year, selected_confidence):
-    filtered_df = filter_by_year(raw_df, selected_year)
-    filtered_df = filter_by_confidence(filtered_df, selected_confidence)
-    analysis_df = get_analysis_data(filtered_df)
+    year_filtered_df = filter_by_year(raw_df, selected_year)
+    filtered_df = filter_by_confidence(year_filtered_df, selected_confidence)
+    analysis_df = get_analysis_data(year_filtered_df)
     full_history_analysis_df = get_analysis_data(raw_df)
 
     return filtered_df, analysis_df, full_history_analysis_df

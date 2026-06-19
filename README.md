@@ -4,33 +4,27 @@ MVP Streamlit app for exploring Red Dead Online Benefits data from CSV.
 
 ## Features
 
-- Load benefits history from `data/raw/rdo_benefits_raw.csv`
-- Display raw/cleaned benefits in Streamlit
-- Calculate probability by benefit group
-- Show simple Plotly charts
-- Estimate next-month benefit group probability
+- Validate and normalize the monthly benefits CSV
+- Display data quality, raw data, empirical probability, and happening benefits
+- Expand all-role, mixed, and pipe-separated benefit components
+- Estimate next-month primary category and component probability
+- Backtest a small set of practical prediction parameters
 
 ## CSV Format
+
+The app reads `data/raw/rdo_benefits_raw.csv`. Primary categories are limited
+to `role`, `non_role`, and `both`.
 
 Required columns:
 
 ```csv
-month,benefit_group,benefit_name
+month_label,start_date,end_date,primary_category,primary_sub_category,is_mixed,mixed_components,is_all_role,all_role_components,is_seasonal,seasonal_type,multiplier_info,weight,component_weight_rule,source_name,source_url,confidence
 ```
 
-Optional columns:
-
-```csv
-description,start_date,end_date
-```
-
-Example:
-
-```csv
-month,benefit_group,benefit_name,description,start_date,end_date
-2026-01,Role Bonus,Bounty Hunter XP Bonus,Example row,2026-01-01,2026-01-31
-2026-02,Discount,Stable Discount,Example row,2026-02-01,2026-02-28
-```
+Pipe-separated component fields are expanded by the application. All-role,
+mixed, and multi-component rows divide their monthly weight equally across
+their components. `multiplier_info` and source fields are display metadata and
+do not affect probability.
 
 ## Run
 
@@ -41,10 +35,7 @@ streamlit run app.py
 
 ## Prediction Method
 
-The MVP uses a simple weighted frequency model:
-
-- 60% historical benefit group frequency
-- 40% recent-month benefit group frequency
-
-This is not a guaranteed Rockstar schedule prediction. It is a lightweight baseline
-that becomes more useful as the CSV history grows.
+The MVP combines weighted historical category frequency, smoothed monthly
+transitions, a moderate post-all-role adjustment, and recent role cooldown.
+Component scores are normalized inside `role`, `non_role`, or `both`, then
+constrained by the adjusted probability of that parent category.

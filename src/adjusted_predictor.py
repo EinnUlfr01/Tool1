@@ -18,11 +18,12 @@ PREDICTION_COLUMNS = [
 ]
 
 ALL_ROLE_DOMAIN_MULTIPLIERS = {
-    "non_role": 1.25,
-    "mixed": 1.10,
-    "role": 0.65,
-    "all_role": 0.10,
+    "role": 0.80,
+    "non_role": 1.15,
+    "both": 1.05,
 }
+MIN_PRIOR_STRENGTH = 2.0
+MAX_PRIOR_STRENGTH = 8.0
 
 
 @dataclass
@@ -30,6 +31,7 @@ class AdjustedPrediction:
     latest_month: str
     predicted_next_month: str
     previous_category: str
+    latest_is_all_role: bool
     table: pd.DataFrame
 
 
@@ -37,16 +39,17 @@ def calculate_adjusted_primary_category_prediction(
     df: pd.DataFrame,
     prior_strength: float = 3,
 ) -> AdjustedPrediction:
-    """Build adjusted prediction scores without machine learning."""
+    """Predict role/non_role/both using frequency and smoothed transitions."""
     sorted_df = prepare_prediction_data(df)
     if sorted_df.empty:
-        return AdjustedPrediction("", "", "", empty_prediction_table())
+        return AdjustedPrediction("", "", "", False, empty_prediction_table())
 
     latest_row = sorted_df.iloc[-1]
     latest_month = latest_row["month_label"]
-    latest_period = latest_row["month_period"]
-    predicted_next_month = str(latest_period + 1)
+    predicted_next_month = str(latest_row["month_period"] + 1)
     previous_category = latest_row["primary_category"]
+    latest_is_all_role = bool(latest_row["is_all_role"])
+    prior_strength = clamp_prior_strength(prior_strength)
 
     base_table = build_base_probability_table(sorted_df)
     transitions = build_transition_pairs(sorted_df)
@@ -59,7 +62,6 @@ def calculate_adjusted_primary_category_prediction(
         category = row.primary_category
         base_probability = row.base_probability
         base_probability_percent = base_probability * 100
-
         observed_transition_count = count_observed_transition(
             transitions,
             previous_category,
@@ -71,20 +73,18 @@ def calculate_adjusted_primary_category_prediction(
             prior_strength,
             base_probability,
         )
-
-        if base_probability == 0:
-            transition_multiplier = 0
-        else:
-            transition_multiplier = smoothed_transition_probability / base_probability
-
-        domain_multiplier = get_domain_multiplier(previous_category, category)
+        transition_multiplier = (
+            smoothed_transition_probability / base_probability
+            if base_probability > 0
+            else 0.0
+        )
+        domain_multiplier = get_domain_multiplier(latest_is_all_role, category)
         final_category_multiplier = transition_multiplier * domain_multiplier
-        raw_score = base_probability_percent * final_category_multiplier
 
         rows.append(
             {
                 "primary_category": category,
-                "count": row.count,
+                "count": int(row.count),
                 "base_probability_percent": base_probability_percent,
                 "observed_transition_count": observed_transition_count,
                 "total_transition_from_previous": total_transition_from_previous,
@@ -94,19 +94,17 @@ def calculate_adjusted_primary_category_prediction(
                 "transition_multiplier": transition_multiplier,
                 "domain_multiplier": domain_multiplier,
                 "final_category_multiplier": final_category_multiplier,
-                "raw_score": raw_score,
+                "raw_score": base_probability_percent * final_category_multiplier,
             }
         )
 
     prediction_df = pd.DataFrame(rows)
-    raw_score_total = prediction_df["raw_score"].sum()
-    if raw_score_total > 0:
-        prediction_df["adjusted_prediction_percent"] = (
-            prediction_df["raw_score"] / raw_score_total * 100
-        )
-    else:
-        prediction_df["adjusted_prediction_percent"] = 0
-
+    raw_score_total = float(prediction_df["raw_score"].sum())
+    prediction_df["adjusted_prediction_percent"] = (
+        prediction_df["raw_score"] / raw_score_total * 100
+        if raw_score_total > 0
+        else prediction_df["base_probability_percent"]
+    )
     prediction_df = prediction_df.sort_values(
         "adjusted_prediction_percent",
         ascending=False,
@@ -116,22 +114,25 @@ def calculate_adjusted_primary_category_prediction(
         latest_month=latest_month,
         predicted_next_month=predicted_next_month,
         previous_category=previous_category,
+        latest_is_all_role=latest_is_all_role,
         table=round_prediction_table(prediction_df),
     )
 
 
 def prepare_prediction_data(df: pd.DataFrame) -> pd.DataFrame:
-    """Use valid non-low rows sorted by month."""
-    required_columns = ["month_label", "primary_category", "confidence"]
+    required_columns = [
+        "month_label",
+        "primary_category",
+        "is_all_role",
+        "weight",
+    ]
     if df.empty or any(column not in df.columns for column in required_columns):
         return pd.DataFrame()
 
     prediction_df = df.copy()
-    prediction_df["confidence"] = prediction_df["confidence"].str.lower()
-    prediction_df["primary_category"] = prediction_df["primary_category"].str.lower()
-    prediction_df = prediction_df[prediction_df["confidence"] != "low"]
-    prediction_df = prediction_df[prediction_df["primary_category"] != ""]
-
+    prediction_df = prediction_df[
+        prediction_df["primary_category"].isin({"role", "non_role", "both"})
+    ]
     month_dates = pd.to_datetime(
         prediction_df["month_label"],
         format="%Y-%m",
@@ -139,19 +140,25 @@ def prepare_prediction_data(df: pd.DataFrame) -> pd.DataFrame:
     )
     prediction_df["month_period"] = month_dates.dt.to_period("M")
     prediction_df = prediction_df.dropna(subset=["month_period"])
-
     return prediction_df.sort_values("month_period").reset_index(drop=True)
 
 
 def build_base_probability_table(df: pd.DataFrame) -> pd.DataFrame:
-    total_months = len(df)
-    base_table = (
-        df["primary_category"]
-        .value_counts()
-        .rename_axis("primary_category")
-        .reset_index(name="count")
+    category_weights = (
+        df.groupby("primary_category", as_index=False)["weight"]
+        .sum()
+        .rename(columns={"weight": "weighted_count"})
     )
-    base_table["base_probability"] = base_table["count"] / total_months
+    category_counts = (
+        df.groupby("primary_category", as_index=False)
+        .size()
+        .rename(columns={"size": "count"})
+    )
+    base_table = category_weights.merge(category_counts, on="primary_category")
+    total_weight = float(base_table["weighted_count"].sum())
+    base_table["base_probability"] = (
+        base_table["weighted_count"] / total_weight if total_weight > 0 else 0.0
+    )
     return base_table
 
 
@@ -174,7 +181,6 @@ def count_observed_transition(
 ) -> int:
     if transitions.empty:
         return 0
-
     return int(
         (
             (transitions["from_category"] == previous_category)
@@ -189,16 +195,26 @@ def calculate_smoothed_transition_probability(
     prior_strength: float,
     base_probability: float,
 ) -> float:
+    denominator = total_transition_from_previous + prior_strength
+    if denominator <= 0:
+        return base_probability
     return (
         observed_transition_count + prior_strength * base_probability
-    ) / (total_transition_from_previous + prior_strength)
+    ) / denominator
 
 
-def get_domain_multiplier(previous_category: str, category: str) -> float:
-    if previous_category != "all_role":
+def clamp_prior_strength(prior_strength: float) -> float:
+    try:
+        value = float(prior_strength)
+    except (TypeError, ValueError):
+        value = 3.0
+    return min(MAX_PRIOR_STRENGTH, max(MIN_PRIOR_STRENGTH, value))
+
+
+def get_domain_multiplier(latest_is_all_role: bool, category: str) -> float:
+    if not latest_is_all_role:
         return 1.0
-
-    return ALL_ROLE_DOMAIN_MULTIPLIERS.get(category, 1.0)
+    return float(ALL_ROLE_DOMAIN_MULTIPLIERS.get(category, 1.0))
 
 
 def round_prediction_table(df: pd.DataFrame) -> pd.DataFrame:

@@ -1,5 +1,6 @@
 import pandas as pd
 
+from src.data_loader import expand_benefit_components
 from src.seasonal_rules import is_seasonal_sub_category_allowed
 
 
@@ -12,12 +13,12 @@ ROLE_ORDER = [
 ]
 
 ALL_ROLE_ORDER = [
-    "all_role",
 ]
 
 NON_ROLE_ORDER = [
     "free_roam",
     "blood_money",
+    "telegram",
     "telegram_missions",
     "races",
     "call_to_arms",
@@ -26,7 +27,6 @@ NON_ROLE_ORDER = [
 ]
 
 MIXED_ORDER = [
-    "mixed",
 ]
 
 SEASONAL_ORDER = [
@@ -37,7 +37,11 @@ SEASONAL_ORDER = [
 OTHER_LABEL = "Other"
 
 
-def calculate_probability(df: pd.DataFrame, column_name: str) -> pd.DataFrame:
+def calculate_probability(
+    df: pd.DataFrame,
+    column_name: str,
+    weight_column: str | None = None,
+) -> pd.DataFrame:
     """Calculate empirical probability for one category column."""
     columns = [column_name, "count", "probability_percent"]
 
@@ -48,16 +52,43 @@ def calculate_probability(df: pd.DataFrame, column_name: str) -> pd.DataFrame:
     if valid_df.empty:
         return pd.DataFrame(columns=columns)
 
-    total = len(valid_df)
-    result = (
-        valid_df[column_name]
-        .value_counts()
-        .rename_axis(column_name)
-        .reset_index(name="count")
-    )
-    result["probability_percent"] = (result["count"] / total * 100).round(2)
+    result = valid_df.groupby(column_name, as_index=False).size()
+    result = result.rename(columns={"size": "count"})
+    if weight_column and weight_column in valid_df.columns:
+        weighted = (
+            valid_df.groupby(column_name, as_index=False)[weight_column]
+            .sum()
+            .rename(columns={weight_column: "_probability_weight"})
+        )
+        result = result.merge(weighted, on=column_name)
+        total = float(result["_probability_weight"].sum())
+        result["probability_percent"] = (
+            result["_probability_weight"] / total * 100 if total > 0 else 0.0
+        )
+        result = result.drop(columns="_probability_weight")
+    else:
+        total = len(valid_df)
+        result["probability_percent"] = result["count"] / total * 100
+
+    result["probability_percent"] = result["probability_percent"].round(2)
+    result = result.sort_values("probability_percent", ascending=False)
 
     return result[columns]
+
+
+def calculate_component_probability(
+    df: pd.DataFrame,
+    component_type: str | None = None,
+) -> pd.DataFrame:
+    """Calculate empirical probability from expanded weighted components."""
+    expanded_df = expand_benefit_components(df)
+    if component_type:
+        expanded_df = expanded_df[expanded_df["component_type"] == component_type]
+    return calculate_probability(
+        expanded_df.rename(columns={"component": "primary_sub_category"}),
+        "primary_sub_category",
+        weight_column="component_weight",
+    )
 
 
 def collapse_to_top_n(
