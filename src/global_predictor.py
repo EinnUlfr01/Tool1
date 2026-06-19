@@ -10,6 +10,15 @@ GLOBAL_PATH_COLUMNS = [
     "global_path_score",
 ]
 
+FINAL_COMPONENT_COLUMNS = [
+    "component",
+    "component_type",
+    "global_probability_percent",
+    "historical_component_weight",
+    "source_paths",
+    "applied_rules",
+]
+
 
 def calculate_global_path_prediction(
     adjusted_primary_df: pd.DataFrame,
@@ -59,3 +68,66 @@ def calculate_global_path_prediction(
 
 def empty_global_path_table() -> pd.DataFrame:
     return pd.DataFrame(columns=GLOBAL_PATH_COLUMNS)
+
+
+def calculate_final_global_component_prediction(
+    conditional_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Combine duplicate components from role/non_role/both parent paths."""
+    required_columns = [
+        "primary_category",
+        "component_type",
+        "primary_sub_category",
+        "component_weight",
+        "adjusted_prediction_percent",
+    ]
+    if conditional_df.empty or any(
+        column not in conditional_df.columns for column in required_columns
+    ):
+        return empty_final_component_table()
+
+    working_df = conditional_df.copy()
+    if "applied_rules" not in working_df.columns:
+        working_df["applied_rules"] = "none"
+
+    grouped = (
+        working_df.groupby(
+            ["primary_sub_category", "component_type"],
+            as_index=False,
+        )
+        .agg(
+            global_probability_percent=("adjusted_prediction_percent", "sum"),
+            historical_component_weight=("component_weight", "sum"),
+            source_paths=("primary_category", join_unique_values),
+            applied_rules=("applied_rules", join_applied_rules),
+        )
+        .rename(columns={"primary_sub_category": "component"})
+    )
+    grouped[
+        ["global_probability_percent", "historical_component_weight"]
+    ] = grouped[
+        ["global_probability_percent", "historical_component_weight"]
+    ].round(4)
+    return grouped.sort_values(
+        "global_probability_percent",
+        ascending=False,
+    ).reset_index(drop=True)[FINAL_COMPONENT_COLUMNS]
+
+
+def join_unique_values(values: pd.Series) -> str:
+    return "|".join(sorted({str(value) for value in values if str(value)}))
+
+
+def join_applied_rules(values: pd.Series) -> str:
+    rules = set()
+    for value in values:
+        rules.update(
+            rule
+            for rule in str(value).split("|")
+            if rule and rule != "none"
+        )
+    return "|".join(sorted(rules)) if rules else "none"
+
+
+def empty_final_component_table() -> pd.DataFrame:
+    return pd.DataFrame(columns=FINAL_COMPONENT_COLUMNS)

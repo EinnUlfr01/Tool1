@@ -7,7 +7,10 @@ from src.conditional_predictor import (
     DEFAULT_COOLDOWN_CONFIG,
     calculate_conditional_sub_category_prediction_with_config,
 )
-from src.global_predictor import calculate_global_path_prediction
+from src.global_predictor import (
+    calculate_final_global_component_prediction,
+    calculate_global_path_prediction,
+)
 from src.probability import order_sub_category_prediction_df
 from src.ui_helpers import load_page_data, run_parameter_optimizer
 
@@ -62,6 +65,17 @@ def validate_prediction_totals(primary_df: pd.DataFrame, sub_df: pd.DataFrame) -
         st.warning("Parent/child prediction totals differ for: " + ", ".join(mismatches))
 
 
+def validate_final_component_total(final_component_df: pd.DataFrame) -> None:
+    if final_component_df.empty:
+        return
+    final_total = float(final_component_df["global_probability_percent"].sum())
+    if not is_percent_close(final_total):
+        st.warning(
+            f"Final Global Component Prediction totals {final_total:.4f}%, "
+            "expected 100%."
+        )
+
+
 def aggregate_component_predictions(
     prediction_df: pd.DataFrame,
     component_type: str,
@@ -99,7 +113,7 @@ def aggregate_component_predictions(
     return order_sub_category_prediction_df(
         aggregated_df,
         predicted_next_month=predicted_next_month,
-        is_prediction=True,
+        is_prediction=False,
     )
 
 
@@ -154,7 +168,7 @@ if optimization_result is None or not optimization_result.enough_data:
     if optimization_result is not None:
         st.info("Not enough historical data for optimization.")
     st.caption(
-        "Using prior_strength=3 and cooldown={recent_1: 0.2, recent_2: 0.4, recent_3: 0.6}."
+        "Using prior_strength=3 and cooldown={recent_1: 0.55, recent_2: 0.75, recent_3: 0.90}."
     )
 else:
     selected_prior_strength = optimization_result.best_prior_strength
@@ -193,8 +207,10 @@ metric_col_3.metric("Previous category", adjusted_prediction.previous_category)
 
 if adjusted_prediction.latest_is_all_role:
     st.info(
-        "The latest month is marked is_all_role=TRUE. A moderate domain adjustment "
-        "reduces immediate role repetition and lifts non_role/both relatively."
+        "Latest month is marked is_all_role=TRUE. The tool keeps it under "
+        "primary_category=role, but applies after-all-role rules: role is strongly "
+        "penalized, non_role is strongly boosted, and both is moderately boosted. "
+        "all_role is not treated as a standalone primary category."
     )
 
 st.dataframe(adjusted_prediction_df, width="stretch", hide_index=True)
@@ -216,6 +232,11 @@ conditional_prediction_df = calculate_conditional_sub_category_prediction_with_c
 )
 validate_prediction_totals(adjusted_prediction_df, conditional_prediction_df)
 
+final_component_df = calculate_final_global_component_prediction(
+    conditional_prediction_df
+)
+validate_final_component_total(final_component_df)
+
 role_prediction_df = aggregate_component_predictions(
     conditional_prediction_df,
     "role",
@@ -227,14 +248,33 @@ non_role_prediction_df = aggregate_component_predictions(
     adjusted_prediction.predicted_next_month,
 )
 
-render_component_prediction("C. Role Sub-category Prediction", role_prediction_df)
+st.header("C. Final Global Component Prediction")
+st.caption(
+    "This is the main component result. It combines role and non-role components "
+    "in one 100% probability system and merges the same component across parent paths."
+)
+if final_component_df.empty:
+    st.info("No global component prediction is available.")
+else:
+    st.dataframe(final_component_df, width="stretch", hide_index=True)
+    final_component_figure = px.pie(
+        final_component_df,
+        names="component",
+        values="global_probability_percent",
+        color="component_type",
+        title="Final Global Component Probability",
+    )
+    final_component_figure.update_traces(textinfo="percent+label", sort=False)
+    st.plotly_chart(final_component_figure, width="stretch")
+
+render_component_prediction("D. Role Component Breakdown", role_prediction_df)
 render_component_prediction(
-    "D. Non-role Sub-category Prediction",
+    "E. Non-role Component Breakdown",
     non_role_prediction_df,
 )
 
 
-st.header("E. Calculation Details")
+st.header("F. Calculation Details")
 st.caption(
     "Each row has its historical weight. all_role_components, mixed_components, "
     "and pipe-separated primary_sub_category values are expanded and split equally. "

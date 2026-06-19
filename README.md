@@ -8,6 +8,7 @@ MVP Streamlit app for exploring Red Dead Online Benefits data from CSV.
 - Display data quality, raw data, empirical probability, and happening benefits
 - Expand all-role, mixed, and pipe-separated benefit components
 - Estimate next-month primary category and component probability
+- Present one Final Global Component Prediction across all component types
 - Backtest a small set of practical prediction parameters
 
 ## CSV Format
@@ -36,6 +37,16 @@ streamlit run app.py
 ## Prediction Method
 
 The MVP combines weighted historical category frequency, smoothed monthly
-transitions, a moderate post-all-role adjustment, and recent role cooldown.
+transitions, after-all-role rules, role/non-role cooldown, and seasonal metadata.
+After an all-role month, `role` is strongly reduced, `non_role` is strongly
+boosted, and `both` is moderately boosted without creating an `all_role`
+primary category.
+
 Component scores are normalized inside `role`, `non_role`, or `both`, then
-constrained by the adjusted probability of that parent category.
+constrained by the adjusted probability of that parent category. The Final
+Global Component Prediction merges duplicate components across parent paths
+and is the main 100% component result. Role and non-role tables are supporting
+breakdowns only.
+
+`multiplier_info`, `source_name`, `source_url`, and `confidence` remain display
+metadata and do not affect probability.

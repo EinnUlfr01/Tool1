@@ -1,15 +1,16 @@
 import pandas as pd
 
 from src.data_loader import ROLE_COMPONENTS, expand_benefit_components
-from src.seasonal_rules import is_seasonal_sub_category_allowed
+from src.seasonal_rules import get_seasonal_prediction_multiplier
 
 
-ALL_ROLE_ROLE_COOLDOWN_MULTIPLIER = 0.75
+AFTER_ALL_ROLE_ROLE_COMPONENT_PENALTY = 0.60
+SAME_NON_ROLE_REPEAT_PENALTY = 0.65
 
 DEFAULT_COOLDOWN_CONFIG = {
-    "recent_1": 0.2,
-    "recent_2": 0.4,
-    "recent_3": 0.6,
+    "recent_1": 0.55,
+    "recent_2": 0.75,
+    "recent_3": 0.90,
 }
 
 CONDITIONAL_COLUMNS = [
@@ -23,9 +24,11 @@ CONDITIONAL_COLUMNS = [
     "conditional_sub_probability_percent",
     "cooldown_multiplier",
     "all_role_role_cooldown_multiplier",
+    "seasonal_multiplier",
     "final_cooldown_multiplier",
     "adjusted_score",
     "sub_raw_score",
+    "applied_rules",
     "normalized_sub_category_weight",
     "adjusted_conditional_sub_probability_percent",
     "parent_primary_adjusted_prediction_percent",
@@ -69,14 +72,11 @@ def calculate_conditional_sub_category_prediction_with_config(
                 latest_is_all_role=latest_is_all_role,
                 recent_sub_categories=recent_sub_categories,
                 cooldown_config=cooldown_config,
+                predicted_next_month=predicted_next_month,
             )
         )
 
     result_df = pd.DataFrame(rows)
-    if result_df.empty:
-        return empty_conditional_table()
-
-    result_df = apply_seasonal_prediction_rules(result_df, predicted_next_month)
     if result_df.empty:
         return empty_conditional_table()
 
@@ -99,6 +99,8 @@ def prepare_conditional_data(
         "mixed_components",
         "is_all_role",
         "all_role_components",
+        "is_seasonal",
+        "seasonal_type",
         "weight",
     ]
     if df.empty or any(column not in df.columns for column in required_columns):
@@ -147,76 +149,93 @@ def build_conditional_rows(
     latest_is_all_role: bool,
     recent_sub_categories: list[set[str]],
     cooldown_config: dict[str, float],
+    predicted_next_month: str | None,
 ) -> list[dict]:
     category_total_weight = float(category_df["component_weight"].sum())
-    grouped = (
-        category_df.groupby(["component", "component_type"], as_index=False)
-        .agg(
-            count=("component", "size"),
-            component_weight=("component_weight", "sum"),
-        )
-    )
-
     rows = []
-    for row in grouped.itertuples(index=False):
+
+    for (component, component_type), component_df in category_df.groupby(
+        ["component", "component_type"],
+        sort=True,
+    ):
+        component_weight = float(component_df["component_weight"].sum())
         cooldown_multiplier = get_cooldown_multiplier(
-            row.component,
+            component,
+            component_type,
             recent_sub_categories,
             cooldown_config,
         )
         all_role_multiplier = get_all_role_role_cooldown_multiplier(
             latest_is_all_role,
-            row.component_type,
+            component_type,
         )
-        final_cooldown_multiplier = cooldown_multiplier * all_role_multiplier
+        seasonal_multiplier = calculate_weighted_seasonal_multiplier(
+            component_df,
+            predicted_next_month,
+        )
+        final_multiplier = (
+            cooldown_multiplier * all_role_multiplier * seasonal_multiplier
+        )
         conditional_base_percent = calculate_percent(
-            row.component_weight,
+            component_weight,
             category_total_weight,
         )
-        adjusted_score = conditional_base_percent * final_cooldown_multiplier
+        adjusted_score = conditional_base_percent * final_multiplier
 
         rows.append(
             {
                 "primary_category": primary_category,
-                "component_type": row.component_type,
-                "primary_sub_category": row.component,
-                "count": int(row.count),
-                "component_weight": float(row.component_weight),
+                "component_type": component_type,
+                "primary_sub_category": component,
+                "count": int(len(component_df)),
+                "component_weight": component_weight,
                 "base_probability_percent": calculate_percent(
-                    row.component_weight,
+                    component_weight,
                     total_component_weight,
                 ),
                 "conditional_base_percent": conditional_base_percent,
                 "conditional_sub_probability_percent": conditional_base_percent,
                 "cooldown_multiplier": cooldown_multiplier,
                 "all_role_role_cooldown_multiplier": all_role_multiplier,
-                "final_cooldown_multiplier": final_cooldown_multiplier,
+                "seasonal_multiplier": seasonal_multiplier,
+                "final_cooldown_multiplier": final_multiplier,
                 "adjusted_score": adjusted_score,
                 "sub_raw_score": adjusted_score,
+                "applied_rules": build_applied_rules(
+                    component_type,
+                    cooldown_multiplier,
+                    all_role_multiplier,
+                    seasonal_multiplier,
+                ),
             }
         )
     return rows
+
+
+def calculate_weighted_seasonal_multiplier(
+    component_df: pd.DataFrame,
+    predicted_next_month: str | None,
+) -> float:
+    total_weight = float(component_df["component_weight"].sum())
+    if total_weight <= 0:
+        return 1.0
+
+    weighted_multiplier = 0.0
+    for row in component_df.itertuples(index=False):
+        multiplier = get_seasonal_prediction_multiplier(
+            component=row.component,
+            is_seasonal=row.is_seasonal,
+            seasonal_type=row.seasonal_type,
+            predicted_next_month=predicted_next_month,
+        )
+        weighted_multiplier += float(row.component_weight) * multiplier
+    return weighted_multiplier / total_weight
 
 
 def calculate_percent(numerator: float, denominator: float) -> float:
     if denominator <= 0:
         return 0.0
     return numerator / denominator * 100
-
-
-def apply_seasonal_prediction_rules(
-    prediction_df: pd.DataFrame,
-    predicted_next_month: str | None,
-) -> pd.DataFrame:
-    if prediction_df.empty:
-        return prediction_df
-    allowed_mask = prediction_df["primary_sub_category"].apply(
-        lambda sub_category: is_seasonal_sub_category_allowed(
-            sub_category,
-            predicted_next_month,
-        )
-    )
-    return prediction_df[allowed_mask].copy()
 
 
 def get_recent_sub_categories(
@@ -242,13 +261,16 @@ def get_recent_sub_categories(
 
 def get_cooldown_multiplier(
     sub_category: str,
+    component_type: str,
     recent_sub_categories: list[set[str]],
     cooldown_config: dict[str, float],
 ) -> float:
-    if sub_category not in ROLE_COMPONENTS:
-        return 1.0
     months_since_seen = get_months_since_seen(sub_category, recent_sub_categories)
-    return get_role_cooldown_multiplier(months_since_seen, cooldown_config)
+    if component_type == "role" and sub_category in ROLE_COMPONENTS:
+        return get_role_cooldown_multiplier(months_since_seen, cooldown_config)
+    if component_type == "non_role" and months_since_seen == 1:
+        return SAME_NON_ROLE_REPEAT_PENALTY
+    return 1.0
 
 
 def get_months_since_seen(
@@ -283,8 +305,28 @@ def get_all_role_role_cooldown_multiplier(
     component_type: str,
 ) -> float:
     if latest_is_all_role and component_type == "role":
-        return ALL_ROLE_ROLE_COOLDOWN_MULTIPLIER
+        return AFTER_ALL_ROLE_ROLE_COMPONENT_PENALTY
     return 1.0
+
+
+def build_applied_rules(
+    component_type: str,
+    cooldown_multiplier: float,
+    all_role_multiplier: float,
+    seasonal_multiplier: float,
+) -> str:
+    rules = []
+    if component_type == "role" and cooldown_multiplier < 1.0:
+        rules.append(f"role_cooldown={cooldown_multiplier:.2f}")
+    elif component_type == "non_role" and cooldown_multiplier < 1.0:
+        rules.append(f"same_non_role_repeat={cooldown_multiplier:.2f}")
+    if all_role_multiplier < 1.0:
+        rules.append(f"after_all_role_component={all_role_multiplier:.2f}")
+    if seasonal_multiplier > 1.0:
+        rules.append(f"in_season={seasonal_multiplier:.2f}")
+    elif seasonal_multiplier < 1.0:
+        rules.append(f"out_of_season={seasonal_multiplier:.2f}")
+    return "|".join(rules) if rules else "none"
 
 
 def normalize_within_primary_category(df: pd.DataFrame) -> pd.DataFrame:
@@ -350,6 +392,7 @@ def round_conditional_table(df: pd.DataFrame) -> pd.DataFrame:
         "conditional_sub_probability_percent",
         "cooldown_multiplier",
         "all_role_role_cooldown_multiplier",
+        "seasonal_multiplier",
         "final_cooldown_multiplier",
         "adjusted_score",
         "sub_raw_score",

@@ -8,9 +8,9 @@ from src.conditional_predictor import DEFAULT_COOLDOWN_CONFIG
 
 PRIOR_STRENGTH_CANDIDATES = [2, 3, 5, 8]
 COOLDOWN_CANDIDATES = [
-    {"recent_1": 0.2, "recent_2": 0.4, "recent_3": 0.6},
-    {"recent_1": 0.3, "recent_2": 0.5, "recent_3": 0.7},
-    {"recent_1": 0.4, "recent_2": 0.6, "recent_3": 0.8},
+    {"recent_1": 0.55, "recent_2": 0.75, "recent_3": 0.90},
+    {"recent_1": 0.65, "recent_2": 0.80, "recent_3": 0.95},
+    {"recent_1": 0.75, "recent_2": 0.90, "recent_3": 1.00},
 ]
 
 OPTIMIZER_COLUMNS = [
@@ -20,6 +20,7 @@ OPTIMIZER_COLUMNS = [
     "cooldown_recent_3",
     "category_top1_accuracy",
     "path_top3_accuracy",
+    "component_top3_accuracy",
     "average_actual_path_rank",
     "rank_score",
     "final_backtest_score",
@@ -103,10 +104,12 @@ def summarize_candidate_result(
     if backtest_result_df.empty:
         category_top1_accuracy = 0
         path_top3_accuracy = 0
+        component_top3_accuracy = 0
         average_actual_path_rank = 999
     else:
         category_top1_accuracy = backtest_result_df["category_top1_hit"].mean()
         path_top3_accuracy = backtest_result_df["path_top3_hit"].mean()
+        component_top3_accuracy = backtest_result_df["component_top3_hit"].mean()
         average_actual_path_rank = backtest_result_df["actual_path_rank"].mean()
 
     rank_score = 0
@@ -115,7 +118,7 @@ def summarize_candidate_result(
 
     final_backtest_score = (
         category_top1_accuracy * 0.4
-        + path_top3_accuracy * 0.4
+        + component_top3_accuracy * 0.4
         + rank_score * 0.2
     )
 
@@ -126,6 +129,7 @@ def summarize_candidate_result(
         "cooldown_recent_3": cooldown_config["recent_3"],
         "category_top1_accuracy": category_top1_accuracy,
         "path_top3_accuracy": path_top3_accuracy,
+        "component_top3_accuracy": component_top3_accuracy,
         "average_actual_path_rank": average_actual_path_rank,
         "rank_score": rank_score,
         "final_backtest_score": final_backtest_score,
@@ -137,6 +141,7 @@ def round_optimizer_table(df: pd.DataFrame) -> pd.DataFrame:
     numeric_columns = [
         "category_top1_accuracy",
         "path_top3_accuracy",
+        "component_top3_accuracy",
         "average_actual_path_rank",
         "rank_score",
         "final_backtest_score",

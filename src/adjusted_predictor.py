@@ -17,11 +17,12 @@ PREDICTION_COLUMNS = [
     "adjusted_prediction_percent",
 ]
 
-ALL_ROLE_DOMAIN_MULTIPLIERS = {
-    "role": 0.80,
-    "non_role": 1.15,
-    "both": 1.05,
+AFTER_ALL_ROLE_MULTIPLIERS = {
+    "role": 0.45,
+    "non_role": 1.45,
+    "both": 1.15,
 }
+ALL_ROLE_REPEAT_PENALTY = 0.10
 MIN_PRIOR_STRENGTH = 2.0
 MAX_PRIOR_STRENGTH = 8.0
 
@@ -214,7 +215,7 @@ def clamp_prior_strength(prior_strength: float) -> float:
 def get_domain_multiplier(latest_is_all_role: bool, category: str) -> float:
     if not latest_is_all_role:
         return 1.0
-    return float(ALL_ROLE_DOMAIN_MULTIPLIERS.get(category, 1.0))
+    return float(AFTER_ALL_ROLE_MULTIPLIERS.get(category, 1.0))
 
 
 def round_prediction_table(df: pd.DataFrame) -> pd.DataFrame:

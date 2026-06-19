@@ -6,7 +6,10 @@ from src.conditional_predictor import (
     calculate_conditional_sub_category_prediction_with_config,
 )
 from src.data_loader import expand_components
-from src.global_predictor import calculate_global_path_prediction
+from src.global_predictor import (
+    calculate_final_global_component_prediction,
+    calculate_global_path_prediction,
+)
 
 
 BACKTEST_RESULT_COLUMNS = [
@@ -16,7 +19,9 @@ BACKTEST_RESULT_COLUMNS = [
     "predicted_primary_category",
     "category_top1_hit",
     "path_top3_hit",
+    "component_top3_hit",
     "actual_path_rank",
+    "actual_component_rank",
 ]
 
 
@@ -55,6 +60,9 @@ def run_walk_forward_backtest(
             predicted_next_month=adjusted_prediction.predicted_next_month,
         )
         global_path_df = calculate_global_path_prediction(adjusted_df, conditional_df)
+        final_component_df = calculate_final_global_component_prediction(
+            conditional_df
+        )
 
         actual_primary_category = actual_row["primary_category"]
         actual_primary_sub_categories = get_actual_sub_categories(actual_row)
@@ -62,6 +70,10 @@ def run_walk_forward_backtest(
         actual_path_rank = get_actual_path_rank(
             global_path_df,
             actual_primary_category,
+            actual_primary_sub_categories,
+        )
+        actual_component_rank = get_actual_component_rank(
+            final_component_df,
             actual_primary_sub_categories,
         )
 
@@ -77,7 +89,9 @@ def run_walk_forward_backtest(
                     predicted_primary_category == actual_primary_category
                 ),
                 "path_top3_hit": int(actual_path_rank <= 3),
+                "component_top3_hit": int(actual_component_rank <= 3),
                 "actual_path_rank": actual_path_rank,
+                "actual_component_rank": actual_component_rank,
             }
         )
 
@@ -145,6 +159,22 @@ def get_actual_path_rank(
     if matches.empty:
         return 999
 
+    return int(matches.index[0]) + 1
+
+
+def get_actual_component_rank(
+    final_component_df: pd.DataFrame,
+    actual_primary_sub_categories: list[str],
+) -> int:
+    if final_component_df.empty or not actual_primary_sub_categories:
+        return 999
+
+    ranked_df = final_component_df.reset_index(drop=True)
+    matches = ranked_df[
+        ranked_df["component"].isin(actual_primary_sub_categories)
+    ]
+    if matches.empty:
+        return 999
     return int(matches.index[0]) + 1
 
 
