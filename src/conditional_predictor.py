@@ -1,7 +1,12 @@
 import pandas as pd
 
-from src.data_loader import ROLE_COMPONENTS, expand_benefit_components
+from src.data_loader import (
+    ROLE_COMPONENTS,
+    VALID_PRIMARY_CATEGORIES,
+    expand_benefit_components,
+)
 from src.seasonal_rules import get_seasonal_prediction_multiplier
+from src.seasonal_rules import is_component_prediction_eligible
 
 
 AFTER_ALL_ROLE_ROLE_COMPONENT_PENALTY = 0.60
@@ -12,6 +17,7 @@ DEFAULT_COOLDOWN_CONFIG = {
     "recent_2": 0.75,
     "recent_3": 0.90,
 }
+RULE_DISPLAY_EPSILON = 0.0001
 
 CONDITIONAL_COLUMNS = [
     "primary_category",
@@ -53,6 +59,13 @@ def calculate_conditional_sub_category_prediction_with_config(
     cooldown_config = normalize_cooldown_config(cooldown_config)
     source_df, component_df = prepare_conditional_data(df)
     if source_df.empty or component_df.empty:
+        return empty_conditional_table()
+
+    component_df = filter_prediction_eligible_components(
+        component_df,
+        predicted_next_month,
+    )
+    if component_df.empty:
         return empty_conditional_table()
 
     latest_is_all_role = bool(source_df.iloc[-1]["is_all_role"])
@@ -114,7 +127,7 @@ def prepare_conditional_data(
     ).dt.to_period("M")
     source_df = source_df.dropna(subset=["month_period"])
     source_df = source_df[
-        source_df["primary_category"].isin({"role", "non_role", "both"})
+        source_df["primary_category"].isin(VALID_PRIMARY_CATEGORIES)
     ].sort_values("month_period")
     component_df = expand_benefit_components(source_df)
     if component_df.empty:
@@ -127,6 +140,21 @@ def prepare_conditional_data(
     ).dt.to_period("M")
     component_df = component_df.dropna(subset=["month_period"])
     return source_df.reset_index(drop=True), component_df.reset_index(drop=True)
+
+
+def filter_prediction_eligible_components(
+    component_df: pd.DataFrame,
+    predicted_next_month: str | None,
+) -> pd.DataFrame:
+    if component_df.empty:
+        return component_df
+    eligible_mask = component_df["component"].apply(
+        lambda component: is_component_prediction_eligible(
+            component,
+            predicted_next_month,
+        )
+    )
+    return component_df[eligible_mask].copy()
 
 
 def normalize_cooldown_config(
@@ -322,9 +350,9 @@ def build_applied_rules(
         rules.append(f"same_non_role_repeat={cooldown_multiplier:.2f}")
     if all_role_multiplier < 1.0:
         rules.append(f"after_all_role_component={all_role_multiplier:.2f}")
-    if seasonal_multiplier > 1.0:
+    if seasonal_multiplier > 1.0 + RULE_DISPLAY_EPSILON:
         rules.append(f"in_season={seasonal_multiplier:.2f}")
-    elif seasonal_multiplier < 1.0:
+    elif seasonal_multiplier < 1.0 - RULE_DISPLAY_EPSILON:
         rules.append(f"out_of_season={seasonal_multiplier:.2f}")
     return "|".join(rules) if rules else "none"
 

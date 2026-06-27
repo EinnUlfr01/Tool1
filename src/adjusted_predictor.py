@@ -2,6 +2,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from src.data_loader import VALID_PRIMARY_CATEGORIES
+
 
 PREDICTION_COLUMNS = [
     "primary_category",
@@ -40,7 +42,7 @@ def calculate_adjusted_primary_category_prediction(
     df: pd.DataFrame,
     prior_strength: float = 3,
 ) -> AdjustedPrediction:
-    """Predict role/non_role/both using frequency and smoothed transitions."""
+    """Predict primary categories using frequency and smoothed transitions."""
     sorted_df = prepare_prediction_data(df)
     if sorted_df.empty:
         return AdjustedPrediction("", "", "", False, empty_prediction_table())
@@ -132,7 +134,7 @@ def prepare_prediction_data(df: pd.DataFrame) -> pd.DataFrame:
 
     prediction_df = df.copy()
     prediction_df = prediction_df[
-        prediction_df["primary_category"].isin({"role", "non_role", "both"})
+        prediction_df["primary_category"].isin(VALID_PRIMARY_CATEGORIES)
     ]
     month_dates = pd.to_datetime(
         prediction_df["month_label"],

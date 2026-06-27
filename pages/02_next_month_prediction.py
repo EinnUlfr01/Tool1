@@ -11,8 +11,17 @@ from src.global_predictor import (
     calculate_final_global_component_prediction,
     calculate_global_path_prediction,
 )
-from src.probability import order_sub_category_prediction_df
-from src.ui_helpers import load_page_data, run_parameter_optimizer
+from src.optimization_cache import (
+    get_cached_best_params,
+    load_optimization_cache,
+    save_optimization_cache,
+)
+from src.parameter_optimizer import optimize_parameters
+from src.probability import (
+    get_sub_category_display_label,
+    order_sub_category_prediction_df,
+)
+from src.ui_helpers import load_page_data
 
 
 DEFAULT_PRIOR_STRENGTH = 3
@@ -106,6 +115,9 @@ def aggregate_component_predictions(
     ] = aggregated_df[
         ["historical_component_weight", "adjusted_prediction_percent", "within_component_type_percent"]
     ].round(4)
+    aggregated_df["display_label"] = aggregated_df["primary_sub_category"].apply(
+        get_sub_category_display_label
+    )
     aggregated_df = aggregated_df.sort_values(
         "adjusted_prediction_percent",
         ascending=False,
@@ -129,14 +141,16 @@ def render_component_prediction(
     total_probability = float(component_df["adjusted_prediction_percent"].sum())
     st.caption(
         f"Combined contribution to the full next-month prediction: "
-        f"{total_probability:.4f}%. Rows from primary_category=both contribute "
-        "to the matching role or non-role component."
+        f"{total_probability:.4f}%. Rows from mixed parent categories contribute "
+        "to the matching component type."
     )
     st.dataframe(component_df, width="stretch", hide_index=True)
 
     figure = px.pie(
         component_df,
-        names="primary_sub_category",
+        names="display_label"
+        if "display_label" in component_df.columns
+        else "primary_sub_category",
         values="adjusted_prediction_percent",
         title=f"{title} composition",
     )
@@ -157,22 +171,56 @@ st.header("A. Auto Backtesting & Parameter Optimization")
 
 selected_prior_strength = DEFAULT_PRIOR_STRENGTH
 selected_cooldown_config = DEFAULT_COOLDOWN_CONFIG.copy()
+optimization_status = "default"
+optimization_result = None
+cache_state = load_optimization_cache()
 
-try:
-    optimization_result = run_parameter_optimizer(prediction_analysis_df)
-except Exception as exc:
-    st.warning(f"Auto optimization failed. Using defaults. Error: {exc}")
-    optimization_result = None
+if cache_state.is_valid:
+    selected_prior_strength, selected_cooldown_config = get_cached_best_params(
+        cache_state.cache
+    )
+    optimization_status = "cached"
+else:
+    optimization_status = cache_state.status
+    st.warning(
+        f"Optimization cache status: {cache_state.status}. "
+        f"{cache_state.reason} Using default params until Run Optimization is pressed."
+    )
 
-if optimization_result is None or not optimization_result.enough_data:
-    if optimization_result is not None:
-        st.info("Not enough historical data for optimization.")
+run_optimization = st.button("Run Optimization")
+if run_optimization:
+    try:
+        optimization_result = optimize_parameters(prediction_analysis_df)
+        if optimization_result.enough_data:
+            cache = save_optimization_cache(optimization_result)
+            selected_prior_strength = optimization_result.best_prior_strength
+            selected_cooldown_config = optimization_result.best_cooldown_config
+            optimization_status = "newly optimized"
+            st.success(
+                "Optimization finished and cache was updated at "
+                f"{cache['created_at']}."
+            )
+        else:
+            optimization_status = "default"
+            st.info("Not enough historical data for optimization. Using defaults.")
+    except Exception as exc:
+        optimization_status = "default"
+        st.warning(f"Optimization failed. Using defaults. Error: {exc}")
+
+st.metric("Optimization params", optimization_status)
+
+if optimization_status == "cached" and cache_state.cache is not None:
+    st.caption(
+        "Using cached optimization params from "
+        f"{cache_state.cache.get('created_at', 'unknown time')} "
+        f"with score {float(cache_state.cache.get('score', 0.0)):.4f}."
+    )
+elif optimization_status in {"default", "stale"}:
     st.caption(
         "Using prior_strength=3 and cooldown={recent_1: 0.55, recent_2: 0.75, recent_3: 0.90}."
     )
-else:
-    selected_prior_strength = optimization_result.best_prior_strength
-    selected_cooldown_config = optimization_result.best_cooldown_config
+
+if optimization_result is not None and optimization_result.enough_data:
     st.dataframe(
         optimization_result.comparison_table,
         width="stretch",
@@ -185,7 +233,8 @@ else:
         f"{optimization_result.best_final_backtest_score:.4f}",
     )
     st.json(selected_cooldown_config)
-    st.caption("Auto-optimized parameters are being used.")
+else:
+    st.json(selected_cooldown_config)
 
 
 st.header("B. Primary Category Prediction")
@@ -256,10 +305,14 @@ st.caption(
 if final_component_df.empty:
     st.info("No global component prediction is available.")
 else:
-    st.dataframe(final_component_df, width="stretch", hide_index=True)
+    final_component_display_df = final_component_df.copy()
+    final_component_display_df["display_label"] = final_component_display_df[
+        "component"
+    ].apply(get_sub_category_display_label)
+    st.dataframe(final_component_display_df, width="stretch", hide_index=True)
     final_component_figure = px.pie(
-        final_component_df,
-        names="component",
+        final_component_display_df,
+        names="display_label",
         values="global_probability_percent",
         color="component_type",
         title="Final Global Component Probability",
@@ -267,20 +320,25 @@ else:
     final_component_figure.update_traces(textinfo="percent+label", sort=False)
     st.plotly_chart(final_component_figure, width="stretch")
 
-render_component_prediction("D. Role Component Breakdown", role_prediction_df)
+render_component_prediction("D. Role Component Breakdown (Advanced)", role_prediction_df)
 render_component_prediction(
-    "E. Non-role Component Breakdown",
+    "E. Non-role Component Breakdown (Advanced)",
     non_role_prediction_df,
 )
 
 
-st.header("F. Calculation Details")
+st.header("F. Calculation Details (Advanced)")
 st.caption(
     "Each row has its historical weight. all_role_components, mixed_components, "
     "and pipe-separated primary_sub_category values are expanded and split equally. "
     "Component scores are normalized inside their source primary category, then "
     "multiplied by that category's adjusted prediction."
 )
+
+# TODO: Split this page into Simple Mode and Advanced / Debug Mode.
+# Simple Mode should keep data summary, primary prediction, final component
+# prediction, and happening benefits. Advanced Mode should keep multipliers,
+# source_paths, applied_rules, breakdowns, and expanded path tables.
 
 with st.expander("Expanded conditional prediction details"):
     st.dataframe(

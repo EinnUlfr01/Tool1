@@ -1,9 +1,24 @@
 SEASONAL_ALLOWED_MONTHS = {
-    "halloween": {10, 11},
-    "holiday": {12, 1},
-    "christmas": {12, 1},
-    "holiday_call_to_arms": {12, 1},
-    "new_year": {1},
+    "halloween": {10},
+    "halloween_call_to_arms": {10},
+    "holiday": {12},
+    "holiday_call_to_arms": {12},
+    "holiday_rewards": {12},
+}
+SEASONAL_COMPONENT_MONTHS = SEASONAL_ALLOWED_MONTHS.copy()
+SEASONAL_DISPLAY_GROUPS = {
+    "halloween": "halloween",
+    "halloween_call_to_arms": "halloween",
+    "holiday": "holiday",
+    "holiday_call_to_arms": "holiday",
+    "holiday_rewards": "holiday",
+}
+SEASONAL_DISPLAY_LABELS = {
+    "halloween": "Halloween",
+    "holiday": "Holiday",
+    "holiday_call_to_arms": "Holiday Call To Arms",
+    "halloween_call_to_arms": "Halloween Call To Arms",
+    "holiday_rewards": "Holiday Rewards",
 }
 
 SEASONAL_MONTH_BOOST = 1.20
@@ -27,6 +42,35 @@ def is_seasonal_sub_category_allowed(
     return predicted_month in allowed_months
 
 
+def is_component_prediction_eligible(
+    component: str,
+    predicted_next_month: str | None,
+) -> bool:
+    eligible_months = get_component_eligible_months(component)
+    if eligible_months is None:
+        return True
+
+    predicted_month = parse_predicted_month(predicted_next_month)
+    if predicted_month is None:
+        return True
+
+    return predicted_month in eligible_months
+
+
+def get_component_eligible_months(component: str) -> set[int] | None:
+    normalized_component = str(component or "").strip().lower()
+    return SEASONAL_COMPONENT_MONTHS.get(normalized_component)
+
+
+def get_component_exclusion_reason(
+    component: str,
+    predicted_next_month: str | None,
+) -> str:
+    if is_component_prediction_eligible(component, predicted_next_month):
+        return ""
+    return "out_of_season_target_month"
+
+
 def get_seasonal_prediction_multiplier(
     component: str,
     is_seasonal: bool,
@@ -35,6 +79,9 @@ def get_seasonal_prediction_multiplier(
 ) -> float:
     if not bool(is_seasonal):
         return 1.0
+
+    if not is_component_prediction_eligible(component, predicted_next_month):
+        return 0.0
 
     seasonal_key = get_seasonal_key(component, seasonal_type)
     if seasonal_key not in SEASONAL_ALLOWED_MONTHS:
@@ -57,6 +104,16 @@ def get_seasonal_key(
     if normalized_type:
         return normalized_type
     return str(component).strip().lower()
+
+
+def normalize_seasonal_display_group(value: str | None) -> str:
+    normalized_value = str(value or "").strip().lower()
+    return SEASONAL_DISPLAY_GROUPS.get(normalized_value, normalized_value)
+
+
+def get_seasonal_display_label(value: str | None) -> str:
+    group = normalize_seasonal_display_group(value)
+    return SEASONAL_DISPLAY_LABELS.get(group, group.replace("_", " ").title())
 
 
 def parse_predicted_month(predicted_next_month: str | None) -> int | None:

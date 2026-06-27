@@ -6,6 +6,7 @@ from src.conditional_predictor import (
     calculate_conditional_sub_category_prediction_with_config,
 )
 from src.data_loader import expand_components
+from src.data_loader import VALID_PRIMARY_CATEGORIES
 from src.global_predictor import (
     calculate_final_global_component_prediction,
     calculate_global_path_prediction,
@@ -114,7 +115,7 @@ def prepare_backtest_data(df: pd.DataFrame) -> pd.DataFrame:
 
     backtest_df = df.copy()
     backtest_df = backtest_df[
-        backtest_df["primary_category"].isin({"role", "non_role", "both"})
+        backtest_df["primary_category"].isin(VALID_PRIMARY_CATEGORIES)
     ]
 
     month_dates = pd.to_datetime(

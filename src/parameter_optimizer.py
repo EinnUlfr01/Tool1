@@ -6,7 +6,7 @@ from src.backtester import prepare_backtest_data, run_walk_forward_backtest
 from src.conditional_predictor import DEFAULT_COOLDOWN_CONFIG
 
 
-PRIOR_STRENGTH_CANDIDATES = [2, 3, 5, 8]
+PRIOR_STRENGTH_CANDIDATES = [2, 3, 4, 5, 6, 7, 8]
 COOLDOWN_CANDIDATES = [
     {"recent_1": 0.55, "recent_2": 0.75, "recent_3": 0.90},
     {"recent_1": 0.65, "recent_2": 0.80, "recent_3": 0.95},

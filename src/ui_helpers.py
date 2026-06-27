@@ -9,17 +9,10 @@ from src.data_loader import (
     get_available_years,
     load_raw_benefits,
 )
-from src.parameter_optimizer import optimize_parameters
-
 
 @st.cache_data
 def load_cached_data():
     return load_raw_benefits(DATA_PATH)
-
-
-@st.cache_data
-def run_parameter_optimizer(df):
-    return optimize_parameters(df)
 
 
 def render_sidebar_filters(raw_df):

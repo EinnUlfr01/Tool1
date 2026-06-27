@@ -73,7 +73,7 @@ def empty_global_path_table() -> pd.DataFrame:
 def calculate_final_global_component_prediction(
     conditional_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Combine duplicate components from role/non_role/both parent paths."""
+    """Combine duplicate components from primary-category parent paths."""
     required_columns = [
         "primary_category",
         "component_type",

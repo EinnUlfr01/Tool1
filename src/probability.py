@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.data_loader import expand_benefit_components
+from src.data_loader import PRIMARY_CATEGORY_ORDER, expand_benefit_components
 from src.seasonal_rules import is_seasonal_sub_category_allowed
 
 
@@ -22,7 +22,7 @@ NON_ROLE_ORDER = [
     "telegram_missions",
     "races",
     "call_to_arms",
-    "showdown",
+    "other_non_role",
     "strange_tales",
 ]
 
@@ -31,10 +31,19 @@ MIXED_ORDER = [
 
 SEASONAL_ORDER = [
     "halloween",
+    "holiday",
     "holiday_call_to_arms",
+    "halloween_call_to_arms",
 ]
 
 OTHER_LABEL = "Other"
+SUB_CATEGORY_DISPLAY_LABELS = {
+    "other_non_role": "Other Non-role",
+    "halloween": "Halloween",
+    "holiday": "Holiday",
+    "holiday_call_to_arms": "Holiday Call To Arms",
+    "halloween_call_to_arms": "Halloween Call To Arms",
+}
 
 
 def calculate_probability(
@@ -71,7 +80,19 @@ def calculate_probability(
         result["probability_percent"] = result["count"] / total * 100
 
     result["probability_percent"] = result["probability_percent"].round(2)
-    result = result.sort_values("probability_percent", ascending=False)
+    if column_name == "primary_category":
+        order_rank = {
+            category: index for index, category in enumerate(PRIMARY_CATEGORY_ORDER)
+        }
+        result["_category_order"] = result[column_name].map(order_rank).fillna(
+            len(PRIMARY_CATEGORY_ORDER)
+        )
+        result = result.sort_values(
+            ["_category_order", "probability_percent"],
+            ascending=[True, False],
+        ).drop(columns="_category_order")
+    else:
+        result = result.sort_values("probability_percent", ascending=False)
 
     return result[columns]
 
@@ -194,4 +215,12 @@ def build_sub_category_order(
         + NON_ROLE_ORDER
         + seasonal_order
         + MIXED_ORDER
+    )
+
+
+def get_sub_category_display_label(value: str | None) -> str:
+    normalized_value = str(value or "").strip().lower()
+    return SUB_CATEGORY_DISPLAY_LABELS.get(
+        normalized_value,
+        normalized_value.replace("_", " ").title(),
     )

@@ -25,13 +25,20 @@ REQUIRED_COLUMNS = [
     "confidence",
 ]
 
-VALID_PRIMARY_CATEGORIES = {"role", "non_role", "both"}
+PRIMARY_CATEGORY_ORDER = ["role", "non_role", "both"]
+VALID_PRIMARY_CATEGORIES = set(PRIMARY_CATEGORY_ORDER)
+NORMALIZABLE_PRIMARY_CATEGORIES = {"all_role", "mixed", "seasonal"}
 ROLE_COMPONENTS = {
     "bounty_hunter",
     "trader",
     "collector",
     "naturalist",
     "moonshiner",
+}
+RARE_NON_ROLE_ALIASES = {
+    "story_missions": "other_non_role",
+    "showdown": "other_non_role",
+    "gang_hideouts": "other_non_role",
 }
 BOOLEAN_COLUMNS = ["is_mixed", "is_all_role", "is_seasonal"]
 TRUE_VALUES = {"true", "1", "yes"}
@@ -86,10 +93,10 @@ def clean_raw_benefits(df: pd.DataFrame) -> pd.DataFrame:
     clean_df["confidence"] = clean_df["confidence"].str.lower()
     clean_df["primary_category"] = clean_df["primary_category"].str.lower()
     clean_df["primary_sub_category"] = clean_df["primary_sub_category"].apply(
-        normalize_component_string
+        lambda value: normalize_component_string(value, normalize_rare_non_role=True)
     )
     clean_df["mixed_components"] = clean_df["mixed_components"].apply(
-        normalize_component_string
+        lambda value: normalize_component_string(value, normalize_rare_non_role=True)
     )
     clean_df["all_role_components"] = clean_df["all_role_components"].apply(
         normalize_component_string
@@ -116,7 +123,9 @@ def clean_raw_benefits(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     invalid_categories = sorted(
-        set(clean_df["primary_category"]) - VALID_PRIMARY_CATEGORIES
+        set(clean_df["primary_category"])
+        - VALID_PRIMARY_CATEGORIES
+        - NORMALIZABLE_PRIMARY_CATEGORIES
     )
     if invalid_categories:
         raise ValueError(
@@ -124,6 +133,11 @@ def clean_raw_benefits(df: pd.DataFrame) -> pd.DataFrame:
             "Invalid value(s): "
             + ", ".join(invalid_categories)
         )
+
+    clean_df["primary_category"] = clean_df.apply(
+        normalize_primary_category,
+        axis=1,
+    )
 
     invalid_months = pd.to_datetime(
         clean_df["month_label"],
@@ -154,30 +168,64 @@ def parse_boolean(value: object, column_name: str = "boolean") -> bool:
     )
 
 
-def parse_components(value: object) -> list[str]:
+def parse_components(
+    value: object,
+    normalize_rare_non_role: bool = False,
+) -> list[str]:
     """Split a pipe-separated component field into normalized unique values."""
     components = []
     seen = set()
     for raw_component in str(value or "").split("|"):
         component = raw_component.strip().lower()
+        if normalize_rare_non_role:
+            component = RARE_NON_ROLE_ALIASES.get(component, component)
         if component and component not in seen:
             components.append(component)
             seen.add(component)
     return components
 
 
-def normalize_component_string(value: object) -> str:
-    return "|".join(parse_components(value))
+def normalize_component_string(
+    value: object,
+    normalize_rare_non_role: bool = False,
+) -> str:
+    return "|".join(
+        parse_components(
+            value,
+            normalize_rare_non_role=normalize_rare_non_role,
+        )
+    )
+
+
+def normalize_primary_category(row: pd.Series) -> str:
+    primary_category = str(row.get("primary_category", "")).strip().lower()
+    if primary_category in VALID_PRIMARY_CATEGORIES:
+        return primary_category
+    if primary_category not in NORMALIZABLE_PRIMARY_CATEGORIES:
+        return primary_category
+
+    components = get_model_components_for_row(row)
+    has_role = any(component in ROLE_COMPONENTS for component in components)
+    has_non_role = any(component not in ROLE_COMPONENTS for component in components)
+
+    if has_role and has_non_role:
+        return "both"
+    if has_role:
+        return "role"
+    return "non_role"
+
+
+def get_model_components_for_row(row: pd.Series) -> list[str]:
+    if bool(row.get("is_all_role", False)):
+        return parse_components(row.get("all_role_components", ""))
+    if bool(row.get("is_mixed", False)):
+        return parse_components(row.get("mixed_components", ""))
+    return parse_components(row.get("primary_sub_category", ""))
 
 
 def expand_components(row: pd.Series) -> list[dict]:
     """Expand one monthly row into weighted role/non-role component records."""
-    if bool(row.get("is_all_role", False)):
-        components = parse_components(row.get("all_role_components", ""))
-    elif bool(row.get("is_mixed", False)):
-        components = parse_components(row.get("mixed_components", ""))
-    else:
-        components = parse_components(row.get("primary_sub_category", ""))
+    components = get_model_components_for_row(row)
 
     if not components:
         return []
