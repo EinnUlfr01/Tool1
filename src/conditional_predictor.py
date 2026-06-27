@@ -5,12 +5,29 @@ from src.data_loader import (
     VALID_PRIMARY_CATEGORIES,
     expand_benefit_components,
 )
+from src.seasonal_rules import get_component_eligible_months
 from src.seasonal_rules import get_seasonal_prediction_multiplier
 from src.seasonal_rules import is_component_prediction_eligible
 
 
 AFTER_ALL_ROLE_ROLE_COMPONENT_PENALTY = 0.60
-SAME_NON_ROLE_REPEAT_PENALTY = 0.65
+ROLE_HISTORICAL_WEIGHT_POWER = 0.5
+ROLE_RECENCY_MULTIPLIERS = {
+    "recent_2_or_less": 0.35,
+    "recent_3": 0.50,
+    "recent_4": 0.70,
+    "recent_5_to_6": 0.90,
+    "older_7_plus": 1.15,
+}
+NON_ROLE_HISTORICAL_WEIGHT_POWER = 0.65
+NON_ROLE_RECENCY_MULTIPLIERS = {
+    "recent_2_or_less": 0.50,
+    "recent_3": 0.65,
+    "recent_4": 0.80,
+    "recent_5_to_6": 1.00,
+    "older_7_plus": 1.10,
+    "unknown": 1.15,
+}
 
 DEFAULT_COOLDOWN_CONFIG = {
     "recent_1": 0.55,
@@ -25,9 +42,12 @@ CONDITIONAL_COLUMNS = [
     "primary_sub_category",
     "count",
     "component_weight",
+    "historical_weight_adjusted",
     "base_probability_percent",
     "conditional_base_percent",
     "conditional_sub_probability_percent",
+    "last_seen_month",
+    "months_since_last_seen",
     "cooldown_multiplier",
     "all_role_role_cooldown_multiplier",
     "seasonal_multiplier",
@@ -70,6 +90,11 @@ def calculate_conditional_sub_category_prediction_with_config(
 
     latest_is_all_role = bool(source_df.iloc[-1]["is_all_role"])
     recent_sub_categories = get_recent_sub_categories(component_df, recent_months=3)
+    role_last_seen_months = get_role_last_seen_months(
+        component_df,
+        ignore_all_role_rows=True,
+    )
+    non_role_last_seen_months = get_non_role_last_seen_months(component_df)
     total_component_weight = float(component_df["component_weight"].sum())
     rows = []
 
@@ -84,6 +109,8 @@ def calculate_conditional_sub_category_prediction_with_config(
                 total_component_weight=total_component_weight,
                 latest_is_all_role=latest_is_all_role,
                 recent_sub_categories=recent_sub_categories,
+                role_last_seen_months=role_last_seen_months,
+                non_role_last_seen_months=non_role_last_seen_months,
                 cooldown_config=cooldown_config,
                 predicted_next_month=predicted_next_month,
             )
@@ -176,22 +203,50 @@ def build_conditional_rows(
     total_component_weight: float,
     latest_is_all_role: bool,
     recent_sub_categories: list[set[str]],
+    role_last_seen_months: dict[str, pd.Period],
+    non_role_last_seen_months: dict[str, pd.Period],
     cooldown_config: dict[str, float],
     predicted_next_month: str | None,
 ) -> list[dict]:
-    category_total_weight = float(category_df["component_weight"].sum())
+    adjusted_weight_by_component = {}
+    for (component, component_type), component_df in category_df.groupby(
+        ["component", "component_type"],
+        sort=True,
+    ):
+        component_weight = float(component_df["component_weight"].sum())
+        adjusted_weight_by_component[(component, component_type)] = (
+            get_historical_weight_adjusted(component, component_type, component_weight)
+        )
+    category_total_adjusted_weight = float(
+        sum(adjusted_weight_by_component.values())
+    )
     rows = []
+    target_period = parse_month_period(predicted_next_month)
 
     for (component, component_type), component_df in category_df.groupby(
         ["component", "component_type"],
         sort=True,
     ):
         component_weight = float(component_df["component_weight"].sum())
+        historical_weight_adjusted = adjusted_weight_by_component[
+            (component, component_type)
+        ]
+        last_seen_period = get_component_last_seen_period(
+            component,
+            component_type,
+            role_last_seen_months,
+            non_role_last_seen_months,
+        )
+        months_since_last_seen = calculate_month_delta(
+            last_seen_period,
+            target_period,
+        )
         cooldown_multiplier = get_cooldown_multiplier(
             component,
             component_type,
             recent_sub_categories,
             cooldown_config,
+            months_since_last_seen=months_since_last_seen,
         )
         all_role_multiplier = get_all_role_role_cooldown_multiplier(
             latest_is_all_role,
@@ -205,8 +260,8 @@ def build_conditional_rows(
             cooldown_multiplier * all_role_multiplier * seasonal_multiplier
         )
         conditional_base_percent = calculate_percent(
-            component_weight,
-            category_total_weight,
+            historical_weight_adjusted,
+            category_total_adjusted_weight,
         )
         adjusted_score = conditional_base_percent * final_multiplier
 
@@ -217,12 +272,17 @@ def build_conditional_rows(
                 "primary_sub_category": component,
                 "count": int(len(component_df)),
                 "component_weight": component_weight,
+                "historical_weight_adjusted": historical_weight_adjusted,
                 "base_probability_percent": calculate_percent(
                     component_weight,
                     total_component_weight,
                 ),
                 "conditional_base_percent": conditional_base_percent,
                 "conditional_sub_probability_percent": conditional_base_percent,
+                "last_seen_month": (
+                    str(last_seen_period) if last_seen_period is not None else ""
+                ),
+                "months_since_last_seen": months_since_last_seen,
                 "cooldown_multiplier": cooldown_multiplier,
                 "all_role_role_cooldown_multiplier": all_role_multiplier,
                 "seasonal_multiplier": seasonal_multiplier,
@@ -250,6 +310,10 @@ def calculate_weighted_seasonal_multiplier(
 
     weighted_multiplier = 0.0
     for row in component_df.itertuples(index=False):
+        if get_component_eligible_months(row.component) is None:
+            multiplier = 1.0
+            weighted_multiplier += float(row.component_weight) * multiplier
+            continue
         multiplier = get_seasonal_prediction_multiplier(
             component=row.component,
             is_seasonal=row.is_seasonal,
@@ -258,6 +322,18 @@ def calculate_weighted_seasonal_multiplier(
         )
         weighted_multiplier += float(row.component_weight) * multiplier
     return weighted_multiplier / total_weight
+
+
+def get_historical_weight_adjusted(
+    component: str,
+    component_type: str,
+    component_weight: float,
+) -> float:
+    if component_type == "role" and component in ROLE_COMPONENTS:
+        return component_weight ** ROLE_HISTORICAL_WEIGHT_POWER
+    if component_type == "non_role":
+        return component_weight ** NON_ROLE_HISTORICAL_WEIGHT_POWER
+    return component_weight
 
 
 def calculate_percent(numerator: float, denominator: float) -> float:
@@ -287,17 +363,90 @@ def get_recent_sub_categories(
     ]
 
 
+def get_role_last_seen_months(
+    component_df: pd.DataFrame,
+    ignore_all_role_rows: bool = True,
+) -> dict[str, pd.Period]:
+    role_df = component_df[
+        component_df["component_type"].eq("role")
+        & component_df["component"].isin(ROLE_COMPONENTS)
+    ].copy()
+    if ignore_all_role_rows:
+        role_df = role_df[~role_df["is_all_role"].eq(True)]
+    if role_df.empty:
+        return {}
+
+    return {
+        str(component): period
+        for component, period in role_df.groupby("component")[
+            "month_period"
+        ].max().items()
+    }
+
+
+def get_non_role_last_seen_months(
+    component_df: pd.DataFrame,
+) -> dict[str, pd.Period]:
+    non_role_df = component_df[component_df["component_type"].eq("non_role")]
+    if non_role_df.empty:
+        return {}
+
+    return {
+        str(component): period
+        for component, period in non_role_df.groupby("component")[
+            "month_period"
+        ].max().items()
+    }
+
+
+def parse_month_period(month_label: str | None) -> pd.Period | None:
+    if not month_label:
+        return None
+    month_date = pd.to_datetime(
+        month_label,
+        format="%Y-%m",
+        errors="coerce",
+    )
+    if pd.isna(month_date):
+        return None
+    return month_date.to_period("M")
+
+
+def get_component_last_seen_period(
+    component: str,
+    component_type: str,
+    role_last_seen_months: dict[str, pd.Period],
+    non_role_last_seen_months: dict[str, pd.Period],
+) -> pd.Period | None:
+    if component_type == "role" and component in ROLE_COMPONENTS:
+        return role_last_seen_months.get(component)
+    if component_type == "non_role":
+        return non_role_last_seen_months.get(component)
+    return None
+
+
+def calculate_month_delta(
+    last_seen_period: pd.Period | None,
+    target_period: pd.Period | None,
+) -> int | None:
+    if last_seen_period is None or target_period is None:
+        return None
+    return (target_period.year - last_seen_period.year) * 12 + (
+        target_period.month - last_seen_period.month
+    )
+
+
 def get_cooldown_multiplier(
     sub_category: str,
     component_type: str,
     recent_sub_categories: list[set[str]],
     cooldown_config: dict[str, float],
+    months_since_last_seen: int | None = None,
 ) -> float:
-    months_since_seen = get_months_since_seen(sub_category, recent_sub_categories)
     if component_type == "role" and sub_category in ROLE_COMPONENTS:
-        return get_role_cooldown_multiplier(months_since_seen, cooldown_config)
-    if component_type == "non_role" and months_since_seen == 1:
-        return SAME_NON_ROLE_REPEAT_PENALTY
+        return get_role_recency_multiplier(months_since_last_seen)
+    if component_type == "non_role":
+        return get_non_role_recency_multiplier(months_since_last_seen)
     return 1.0
 
 
@@ -328,6 +477,34 @@ def get_role_cooldown_multiplier(
     return 1.0
 
 
+def get_role_recency_multiplier(months_since_last_seen: int | None) -> float:
+    if months_since_last_seen is None:
+        return 1.0
+    if months_since_last_seen <= 2:
+        return ROLE_RECENCY_MULTIPLIERS["recent_2_or_less"]
+    if months_since_last_seen == 3:
+        return ROLE_RECENCY_MULTIPLIERS["recent_3"]
+    if months_since_last_seen == 4:
+        return ROLE_RECENCY_MULTIPLIERS["recent_4"]
+    if months_since_last_seen in {5, 6}:
+        return ROLE_RECENCY_MULTIPLIERS["recent_5_to_6"]
+    return ROLE_RECENCY_MULTIPLIERS["older_7_plus"]
+
+
+def get_non_role_recency_multiplier(months_since_last_seen: int | None) -> float:
+    if months_since_last_seen is None:
+        return NON_ROLE_RECENCY_MULTIPLIERS["unknown"]
+    if months_since_last_seen <= 2:
+        return NON_ROLE_RECENCY_MULTIPLIERS["recent_2_or_less"]
+    if months_since_last_seen == 3:
+        return NON_ROLE_RECENCY_MULTIPLIERS["recent_3"]
+    if months_since_last_seen == 4:
+        return NON_ROLE_RECENCY_MULTIPLIERS["recent_4"]
+    if months_since_last_seen in {5, 6}:
+        return NON_ROLE_RECENCY_MULTIPLIERS["recent_5_to_6"]
+    return NON_ROLE_RECENCY_MULTIPLIERS["older_7_plus"]
+
+
 def get_all_role_role_cooldown_multiplier(
     latest_is_all_role: bool,
     component_type: str,
@@ -347,7 +524,9 @@ def build_applied_rules(
     if component_type == "role" and cooldown_multiplier < 1.0:
         rules.append(f"role_cooldown={cooldown_multiplier:.2f}")
     elif component_type == "non_role" and cooldown_multiplier < 1.0:
-        rules.append(f"same_non_role_repeat={cooldown_multiplier:.2f}")
+        rules.append(f"non_role_cooldown={cooldown_multiplier:.2f}")
+    elif component_type == "non_role" and cooldown_multiplier > 1.0:
+        rules.append(f"non_role_long_gap={cooldown_multiplier:.2f}")
     if all_role_multiplier < 1.0:
         rules.append(f"after_all_role_component={all_role_multiplier:.2f}")
     if seasonal_multiplier > 1.0 + RULE_DISPLAY_EPSILON:
@@ -415,9 +594,11 @@ def round_conditional_table(df: pd.DataFrame) -> pd.DataFrame:
     rounded_df = df.copy()
     numeric_columns = [
         "component_weight",
+        "historical_weight_adjusted",
         "base_probability_percent",
         "conditional_base_percent",
         "conditional_sub_probability_percent",
+        "months_since_last_seen",
         "cooldown_multiplier",
         "all_role_role_cooldown_multiplier",
         "seasonal_multiplier",

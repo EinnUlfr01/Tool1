@@ -21,7 +21,12 @@ from src.probability import (
     get_sub_category_display_label,
     order_sub_category_prediction_df,
 )
-from src.ui_helpers import load_page_data
+from src.ui_helpers import (
+    build_simple_final_component_table,
+    build_simple_primary_prediction_table,
+    load_page_data,
+    render_debug_mode_toggle,
+)
 
 
 DEFAULT_PRIOR_STRENGTH = 3
@@ -39,6 +44,7 @@ st.caption(
     "A practical weighted model using role/non_role/both history, monthly "
     "transitions, expanded components, and recent-role cooldown."
 )
+debug_mode = render_debug_mode_toggle()
 
 
 def is_percent_close(value: float, expected: float = 100.0) -> bool:
@@ -221,20 +227,22 @@ elif optimization_status in {"default", "stale"}:
     )
 
 if optimization_result is not None and optimization_result.enough_data:
-    st.dataframe(
-        optimization_result.comparison_table,
-        width="stretch",
-        hide_index=True,
-    )
     best_col_1, best_col_2 = st.columns(2)
     best_col_1.metric("Best prior strength", selected_prior_strength)
     best_col_2.metric(
         "Best backtest score",
         f"{optimization_result.best_final_backtest_score:.4f}",
     )
-    st.json(selected_cooldown_config)
+    if debug_mode:
+        st.dataframe(
+            optimization_result.comparison_table,
+            width="stretch",
+            hide_index=True,
+        )
+        st.json(selected_cooldown_config)
 else:
-    st.json(selected_cooldown_config)
+    if debug_mode:
+        st.json(selected_cooldown_config)
 
 
 st.header("B. Primary Category Prediction")
@@ -262,7 +270,17 @@ if adjusted_prediction.latest_is_all_role:
         "all_role is not treated as a standalone primary category."
     )
 
-st.dataframe(adjusted_prediction_df, width="stretch", hide_index=True)
+if debug_mode:
+    st.dataframe(adjusted_prediction_df, width="stretch", hide_index=True)
+else:
+    st.dataframe(
+        build_simple_primary_prediction_table(
+            adjusted_prediction_df,
+            adjusted_prediction.latest_is_all_role,
+        ),
+        width="stretch",
+        hide_index=True,
+    )
 primary_figure = px.pie(
     adjusted_prediction_df,
     names="primary_category",
@@ -309,7 +327,17 @@ else:
     final_component_display_df["display_label"] = final_component_display_df[
         "component"
     ].apply(get_sub_category_display_label)
-    st.dataframe(final_component_display_df, width="stretch", hide_index=True)
+    if debug_mode:
+        st.dataframe(final_component_display_df, width="stretch", hide_index=True)
+    else:
+        st.dataframe(
+            build_simple_final_component_table(
+                final_component_display_df,
+                adjusted_prediction.latest_is_all_role,
+            ),
+            width="stretch",
+            hide_index=True,
+        )
     final_component_figure = px.pie(
         final_component_display_df,
         names="display_label",
@@ -320,40 +348,35 @@ else:
     final_component_figure.update_traces(textinfo="percent+label", sort=False)
     st.plotly_chart(final_component_figure, width="stretch")
 
-render_component_prediction("D. Role Component Breakdown (Advanced)", role_prediction_df)
-render_component_prediction(
-    "E. Non-role Component Breakdown (Advanced)",
-    non_role_prediction_df,
-)
+if debug_mode:
+    render_component_prediction("D. Role Component Breakdown", role_prediction_df)
+    render_component_prediction(
+        "E. Non-role Component Breakdown",
+        non_role_prediction_df,
+    )
 
+    st.header("F. Calculation Details")
+    st.caption(
+        "Each row has its historical weight. all_role_components, mixed_components, "
+        "and pipe-separated primary_sub_category values are expanded and split equally. "
+        "Component scores are normalized inside their source primary category, then "
+        "multiplied by that category's adjusted prediction."
+    )
 
-st.header("F. Calculation Details (Advanced)")
-st.caption(
-    "Each row has its historical weight. all_role_components, mixed_components, "
-    "and pipe-separated primary_sub_category values are expanded and split equally. "
-    "Component scores are normalized inside their source primary category, then "
-    "multiplied by that category's adjusted prediction."
-)
+    with st.expander("Expanded conditional prediction details"):
+        st.dataframe(
+            conditional_prediction_df,
+            width="stretch",
+            hide_index=True,
+        )
 
-# TODO: Split this page into Simple Mode and Advanced / Debug Mode.
-# Simple Mode should keep data summary, primary prediction, final component
-# prediction, and happening benefits. Advanced Mode should keep multipliers,
-# source_paths, applied_rules, breakdowns, and expanded path tables.
-
-with st.expander("Expanded conditional prediction details"):
-    st.dataframe(
+    global_path_prediction_df = calculate_global_path_prediction(
+        adjusted_prediction_df,
         conditional_prediction_df,
-        width="stretch",
-        hide_index=True,
     )
-
-global_path_prediction_df = calculate_global_path_prediction(
-    adjusted_prediction_df,
-    conditional_prediction_df,
-)
-with st.expander("Global category to component paths"):
-    st.dataframe(
-        global_path_prediction_df,
-        width="stretch",
-        hide_index=True,
-    )
+    with st.expander("Global category to component paths"):
+        st.dataframe(
+            global_path_prediction_df,
+            width="stretch",
+            hide_index=True,
+        )

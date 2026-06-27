@@ -3,12 +3,20 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pandas as pd
+
 from src.adjusted_predictor import calculate_adjusted_primary_category_prediction
 from src.conditional_predictor import (
     DEFAULT_COOLDOWN_CONFIG,
     calculate_conditional_sub_category_prediction_with_config,
+    get_non_role_recency_multiplier,
+    get_role_last_seen_months,
 )
-from src.data_loader import load_raw_benefits
+from src.data_loader import (
+    ROLE_COMPONENTS,
+    expand_benefit_components,
+    load_raw_benefits,
+)
 from src.global_predictor import calculate_final_global_component_prediction
 from src.optimization_cache import (
     get_cached_best_params,
@@ -20,6 +28,11 @@ from src.probability import get_sub_category_display_label
 from src.seasonal_rules import (
     get_component_eligible_months,
     is_component_prediction_eligible,
+)
+from src.ui_helpers import (
+    build_all_benefits_table,
+    build_simple_final_component_table,
+    build_simple_primary_prediction_table,
 )
 
 
@@ -137,6 +150,7 @@ class PredictionLogicTest(unittest.TestCase):
             "call_to_arms",
             "free_roam",
             "races",
+            "featured_series",
             "other_non_role",
         ]:
             self.assertIn(component, final_components)
@@ -147,6 +161,112 @@ class PredictionLogicTest(unittest.TestCase):
             100.0,
             places=2,
         )
+
+    def test_role_recency_order_for_target_month_2026_07(self):
+        role_rows = self.final[
+            self.final["component"].isin(ROLE_COMPONENTS)
+        ].sort_values("global_probability_percent", ascending=False)
+        self.assertEqual(
+            role_rows["component"].to_list(),
+            [
+                "collector",
+                "bounty_hunter",
+                "moonshiner",
+                "trader",
+                "naturalist",
+            ],
+        )
+
+    def test_all_role_rows_are_ignored_for_role_recency(self):
+        expanded = expand_benefit_components(self.df)
+        expanded["month_period"] = (
+            pd.to_datetime(
+                expanded["month_label"],
+                format="%Y-%m",
+                errors="coerce",
+            ).dt.to_period("M")
+        )
+        last_seen = get_role_last_seen_months(expanded, ignore_all_role_rows=True)
+        self.assertEqual(str(last_seen["collector"]), "2025-09")
+        self.assertNotEqual(str(last_seen["collector"]), "2026-06")
+        self.assertEqual(str(last_seen["trader"]), "2026-04")
+
+    def test_role_recency_multipliers_are_ordered_by_last_seen(self):
+        role_rows = self.conditional[
+            self.conditional["primary_category"].eq("role")
+            & self.conditional["primary_sub_category"].isin(ROLE_COMPONENTS)
+        ].set_index("primary_sub_category")
+        multipliers = role_rows["cooldown_multiplier"]
+        self.assertLess(multipliers["naturalist"], multipliers["trader"])
+        self.assertLess(multipliers["trader"], multipliers["moonshiner"])
+        self.assertLess(multipliers["moonshiner"], multipliers["bounty_hunter"])
+        self.assertLess(multipliers["bounty_hunter"], multipliers["collector"])
+
+        self.assertEqual(role_rows.loc["naturalist", "last_seen_month"], "2026-05")
+        self.assertEqual(role_rows.loc["trader", "last_seen_month"], "2026-04")
+        self.assertEqual(role_rows.loc["moonshiner", "last_seen_month"], "2026-03")
+        self.assertEqual(role_rows.loc["bounty_hunter", "last_seen_month"], "2026-01")
+        self.assertEqual(role_rows.loc["collector", "last_seen_month"], "2025-09")
+
+    def test_non_role_recency_exists(self):
+        non_role_rows = self.conditional[
+            self.conditional["component_type"].eq("non_role")
+        ]
+        self.assertGreater(len(non_role_rows), 0)
+        self.assertIn("last_seen_month", non_role_rows.columns)
+        self.assertIn("months_since_last_seen", non_role_rows.columns)
+        self.assertIn("cooldown_multiplier", non_role_rows.columns)
+
+        traced_components = {
+            "blood_money",
+            "telegram",
+            "call_to_arms",
+            "free_roam",
+            "races",
+            "featured_series",
+            "other_non_role",
+        }
+        traced_rows = non_role_rows[
+            non_role_rows["primary_sub_category"].isin(traced_components)
+        ]
+        self.assertEqual(set(traced_rows["primary_sub_category"]), traced_components)
+        self.assertFalse(traced_rows["last_seen_month"].eq("").any())
+        self.assertFalse(traced_rows["months_since_last_seen"].isna().any())
+
+    def test_non_role_recency_multiplier_order(self):
+        self.assertLess(
+            get_non_role_recency_multiplier(2),
+            get_non_role_recency_multiplier(3),
+        )
+        self.assertLess(
+            get_non_role_recency_multiplier(3),
+            get_non_role_recency_multiplier(4),
+        )
+        self.assertLess(
+            get_non_role_recency_multiplier(4),
+            get_non_role_recency_multiplier(5),
+        )
+        self.assertLess(
+            get_non_role_recency_multiplier(6),
+            get_non_role_recency_multiplier(7),
+        )
+        self.assertGreater(
+            get_non_role_recency_multiplier(None),
+            get_non_role_recency_multiplier(7),
+        )
+
+    def test_non_role_score_uses_recency_multiplier(self):
+        row = self.conditional[
+            self.conditional["primary_category"].eq("non_role")
+            & self.conditional["primary_sub_category"].eq("call_to_arms")
+        ].iloc[0]
+        self.assertNotEqual(float(row["cooldown_multiplier"]), 1.0)
+        expected_score = (
+            float(row["conditional_base_percent"])
+            * float(row["cooldown_multiplier"])
+            * float(row["seasonal_multiplier"])
+        )
+        self.assertAlmostEqual(float(row["adjusted_score"]), expected_score, places=3)
 
 
 class OptimizationCacheTest(unittest.TestCase):
@@ -174,6 +294,99 @@ class OptimizationCacheTest(unittest.TestCase):
             cache_path.write_text(json.dumps(cache), encoding="utf-8")
             stale = load_optimization_cache(cache_path=cache_path)
             self.assertEqual(stale.status, "stale")
+
+
+class SimpleUiHelperTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.df = load_raw_benefits()
+        cls.primary_prediction = calculate_adjusted_primary_category_prediction(cls.df)
+        cls.conditional = calculate_conditional_sub_category_prediction_with_config(
+            cls.df,
+            cooldown_config=DEFAULT_COOLDOWN_CONFIG,
+            parent_primary_prediction_df=cls.primary_prediction.table,
+            predicted_next_month=cls.primary_prediction.predicted_next_month,
+        )
+        cls.final = calculate_final_global_component_prediction(cls.conditional)
+        cls.final["display_label"] = cls.final["component"].apply(
+            get_sub_category_display_label
+        )
+
+    def test_all_benefits_table_is_display_only(self):
+        table = build_all_benefits_table(self.df)
+        self.assertEqual(
+            list(table.columns),
+            ["Month", "Benefit Type", "Benefits Main Info", "Source"],
+        )
+        self.assertGreater(len(table), 0)
+
+    def test_simple_primary_table_hides_debug_columns(self):
+        table = build_simple_primary_prediction_table(
+            self.primary_prediction.table,
+            self.primary_prediction.latest_is_all_role,
+        )
+        self.assertEqual(list(table.columns), ["Category", "Probability %", "Reason"])
+        self.assertNotIn("raw_score", table.columns)
+        self.assertNotIn("domain_multiplier", table.columns)
+
+    def test_simple_final_table_hides_debug_columns(self):
+        table = build_simple_final_component_table(
+            self.final,
+            self.primary_prediction.latest_is_all_role,
+        )
+        self.assertEqual(
+            list(table.columns),
+            ["Rank", "Component", "Type", "Probability %", "Reason"],
+        )
+        self.assertNotIn("source_paths", table.columns)
+        self.assertNotIn("applied_rules", table.columns)
+        self.assertNotIn("historical_component_weight", table.columns)
+
+    def test_normal_roles_do_not_show_seasonal_timing_reason(self):
+        table = build_simple_final_component_table(
+            self.final,
+            self.primary_prediction.latest_is_all_role,
+        )
+        normal_role_labels = [
+            "Bounty Hunter",
+            "Collector",
+            "Naturalist",
+            "Moonshiner",
+        ]
+        role_reasons = table[
+            table["Component"].isin(normal_role_labels)
+        ].set_index("Component")["Reason"]
+
+        for component in role_reasons.index:
+            self.assertNotIn("Seasonal timing", role_reasons[component])
+
+    def test_non_role_recency_reason_is_simple(self):
+        table = build_simple_final_component_table(
+            self.final,
+            self.primary_prediction.latest_is_all_role,
+        )
+        call_to_arms_reason = table.loc[
+            table["Component"].eq("Call To Arms"),
+            "Reason",
+        ].iloc[0]
+        self.assertIn("Long time since last seen", call_to_arms_reason)
+        self.assertNotIn("non_role_long_gap", call_to_arms_reason)
+
+        synthetic_final = self.final.copy()
+        synthetic_final.loc[
+            synthetic_final["component"].eq("blood_money"),
+            "applied_rules",
+        ] = "non_role_cooldown=0.65"
+        synthetic_table = build_simple_final_component_table(
+            synthetic_final,
+            self.primary_prediction.latest_is_all_role,
+        )
+        blood_money_reason = synthetic_table.loc[
+            synthetic_table["Component"].eq("Blood Money"),
+            "Reason",
+        ].iloc[0]
+        self.assertIn("Recent non-role cooldown", blood_money_reason)
+        self.assertNotIn("non_role_cooldown", blood_money_reason)
 
 
 if __name__ == "__main__":

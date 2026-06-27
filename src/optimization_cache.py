@@ -9,6 +9,10 @@ from typing import Any
 
 from src.adjusted_predictor import AFTER_ALL_ROLE_MULTIPLIERS
 from src.conditional_predictor import DEFAULT_COOLDOWN_CONFIG
+from src.conditional_predictor import NON_ROLE_HISTORICAL_WEIGHT_POWER
+from src.conditional_predictor import NON_ROLE_RECENCY_MULTIPLIERS
+from src.conditional_predictor import ROLE_HISTORICAL_WEIGHT_POWER
+from src.conditional_predictor import ROLE_RECENCY_MULTIPLIERS
 from src.conditional_predictor import RULE_DISPLAY_EPSILON
 from src.data_loader import DATA_PATH
 from src.parameter_optimizer import (
@@ -25,7 +29,7 @@ from src.seasonal_rules import (
 
 
 CACHE_PATH = Path(".cache/optimization_result.json")
-LOGIC_VERSION = "primary3-seasonal-eligibility-v1"
+LOGIC_VERSION = "role-nonrole-recency-v1"
 
 
 @dataclass
@@ -117,6 +121,10 @@ def build_rules_payload() -> dict[str, Any]:
     return {
         "after_all_role_multipliers": AFTER_ALL_ROLE_MULTIPLIERS,
         "default_cooldown_config": DEFAULT_COOLDOWN_CONFIG,
+        "non_role_historical_weight_power": NON_ROLE_HISTORICAL_WEIGHT_POWER,
+        "non_role_recency_multipliers": NON_ROLE_RECENCY_MULTIPLIERS,
+        "role_historical_weight_power": ROLE_HISTORICAL_WEIGHT_POWER,
+        "role_recency_multipliers": ROLE_RECENCY_MULTIPLIERS,
         "seasonal_allowed_months": {
             key: sorted(value) for key, value in SEASONAL_ALLOWED_MONTHS.items()
         },
