@@ -1,6 +1,26 @@
 import pandas as pd
 
-from src.seasonal_rules import SEASONAL_ALLOWED_MONTHS
+from src.seasonal_rules import KNOWN_SEASONAL_TYPES, SEASONAL_TYPE_MONTHS
+from src.taxonomy import (
+    VALID_PREDICTION_COMPONENTS,
+    VALID_PRIMARY_CATEGORIES,
+    VALID_ROLE_COMPONENTS,
+    canonical_component,
+    normalize_component,
+    stringify_token,
+)
+
+
+VALIDATION_COLUMNS = [
+    "row_index",
+    "month_label",
+    "field",
+    "raw_value",
+    "normalized_value",
+    "severity",
+    "message",
+    "suggested_fix",
+]
 
 
 def find_duplicate_months(df: pd.DataFrame) -> pd.DataFrame:
@@ -85,9 +105,9 @@ def find_seasonal_quality_warnings(df: pd.DataFrame) -> pd.DataFrame:
                     "is_seasonal is TRUE but seasonal_type is empty",
                 )
             )
-        if seasonal_type in SEASONAL_ALLOWED_MONTHS:
+        if seasonal_type in SEASONAL_TYPE_MONTHS:
             actual_months = get_benefit_months(row)
-            expected_months = SEASONAL_ALLOWED_MONTHS[seasonal_type]
+            expected_months = SEASONAL_TYPE_MONTHS[seasonal_type]
             if actual_months and actual_months.isdisjoint(expected_months):
                 warnings.append(
                     build_seasonal_warning(
@@ -99,6 +119,295 @@ def find_seasonal_quality_warnings(df: pd.DataFrame) -> pd.DataFrame:
                 )
 
     return pd.DataFrame(warnings, columns=columns)
+
+
+def validate_sub_category_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Validate V2 prediction taxonomy without mutating source CSV data."""
+    if df.empty:
+        return pd.DataFrame(columns=VALIDATION_COLUMNS)
+
+    records = []
+    for index, row in df.iterrows():
+        month_label = str(row.get("month_label", "") or "").strip()
+        primary_category = str(row.get("primary_category", "") or "").strip().lower()
+        is_mixed = bool(row.get("is_mixed", False))
+        is_all_role = bool(row.get("is_all_role", False))
+        is_seasonal = bool(row.get("is_seasonal", False))
+
+        if primary_category not in VALID_PRIMARY_CATEGORIES:
+            records.append(
+                build_validation_record(
+                    index,
+                    month_label,
+                    "primary_category",
+                    raw_field_value(row, "primary_category"),
+                    primary_category,
+                    "error",
+                    "Unknown primary category.",
+                    "Use role, non_role, or both.",
+                )
+            )
+
+        primary_raw = raw_field_value(row, "primary_sub_category")
+        mixed_raw = raw_field_value(row, "mixed_components")
+        all_role_raw = raw_field_value(row, "all_role_components")
+
+        primary_components = split_component_values(primary_raw)
+        mixed_components = split_component_values(mixed_raw)
+        all_role_components = split_component_values(all_role_raw)
+
+        if primary_category == "role" and not primary_components:
+            if not (is_all_role and all_role_components):
+                records.append(
+                    build_validation_record(
+                        index,
+                        month_label,
+                        "primary_sub_category",
+                        primary_raw,
+                        "",
+                        "error",
+                        "primary_sub_category is required for role rows.",
+                        "Fill a valid role component or all_role_components.",
+                    )
+                )
+        if primary_category == "non_role" and not primary_components:
+            records.append(
+                build_validation_record(
+                    index,
+                    month_label,
+                    "primary_sub_category",
+                    primary_raw,
+                    "",
+                    "error",
+                    "primary_sub_category is required for non_role rows.",
+                    "Fill a valid non-role component.",
+                )
+            )
+        if primary_category == "both" and not mixed_components:
+            records.append(
+                build_validation_record(
+                    index,
+                    month_label,
+                    "mixed_components",
+                    mixed_raw,
+                    "",
+                    "error",
+                    "mixed_components is required for both rows.",
+                    "Fill pipe-separated valid role/non-role components.",
+                )
+            )
+        if is_mixed and not mixed_components:
+            records.append(
+                build_validation_record(
+                    index,
+                    month_label,
+                    "mixed_components",
+                    mixed_raw,
+                    "",
+                    "error",
+                    "is_mixed is TRUE but mixed_components is empty.",
+                    "Fill pipe-separated valid mixed components.",
+                )
+            )
+        if is_all_role and not all_role_components:
+            records.append(
+                build_validation_record(
+                    index,
+                    month_label,
+                    "all_role_components",
+                    all_role_raw,
+                    "",
+                    "error",
+                    "is_all_role is TRUE but all_role_components is empty.",
+                    "Fill all valid role components.",
+                )
+            )
+
+        if primary_components and not should_skip_primary_components(
+            primary_components,
+            is_all_role,
+            all_role_components,
+        ):
+            records.extend(
+                validate_component_field(
+                    index,
+                    month_label,
+                    "primary_sub_category",
+                    primary_components,
+                    component_context_for_primary(primary_category),
+                )
+            )
+        if mixed_components:
+            records.extend(
+                validate_component_field(
+                    index,
+                    month_label,
+                    "mixed_components",
+                    mixed_components,
+                    "mixed",
+                )
+            )
+        if all_role_components:
+            records.extend(
+                validate_all_role_components(
+                    index,
+                    month_label,
+                    all_role_components,
+                )
+            )
+
+        seasonal_type = raw_field_value(row, "seasonal_type")
+        normalized_seasonal_type = canonical_component(seasonal_type)
+        if seasonal_type and normalized_seasonal_type not in KNOWN_SEASONAL_TYPES:
+            records.append(
+                build_validation_record(
+                    index,
+                    month_label,
+                    "seasonal_type",
+                    seasonal_type,
+                    normalized_seasonal_type,
+                    "warning",
+                    "seasonal_type is not in current seasonal mapping.",
+                    "Add it to known seasonal types if this is historical metadata, or add eligibility if recurring.",
+                )
+            )
+        if (
+            is_seasonal
+            and normalized_seasonal_type in VALID_PREDICTION_COMPONENTS
+            and normalized_seasonal_type not in SEASONAL_TYPE_MONTHS
+        ):
+            records.append(
+                build_validation_record(
+                    index,
+                    month_label,
+                    "seasonal_type",
+                    seasonal_type,
+                    normalized_seasonal_type,
+                    "warning",
+                    "seasonal_type is being used without eligibility mapping.",
+                    "Add this seasonal type to seasonal_rules before applying timing rules.",
+                )
+            )
+
+    return pd.DataFrame(records, columns=VALIDATION_COLUMNS)
+
+
+def split_component_values(value: object) -> list[str]:
+    return [
+        stringify_token(component)
+        for component in stringify_token(value).split("|")
+        if stringify_token(component)
+    ]
+
+
+def raw_field_value(row: pd.Series, field: str) -> str:
+    raw_field = f"raw_{field}"
+    if raw_field in row:
+        return stringify_token(row.get(raw_field, ""))
+    return stringify_token(row.get(field, ""))
+
+
+def should_skip_primary_components(
+    primary_components: list[str],
+    is_all_role: bool,
+    all_role_components: list[str],
+) -> bool:
+    normalized = {canonical_component(component) for component in primary_components}
+    return bool(is_all_role and all_role_components and normalized == {"all_roles"})
+
+
+def component_context_for_primary(primary_category: str) -> str:
+    if primary_category == "role":
+        return "role"
+    if primary_category == "non_role":
+        return "non_role"
+    return "mixed"
+
+
+def validate_component_field(
+    row_index: int,
+    month_label: str,
+    field: str,
+    components: list[str],
+    context: str,
+) -> list[dict]:
+    records = []
+    for component in components:
+        result = normalize_component(component, context=context)
+        if result.severity:
+            records.append(
+                build_validation_record(
+                    row_index,
+                    month_label,
+                    field,
+                    result.raw_value,
+                    result.normalized_value,
+                    result.severity,
+                    result.message,
+                    result.suggested_fix,
+                )
+            )
+    return records
+
+
+def validate_all_role_components(
+    row_index: int,
+    month_label: str,
+    components: list[str],
+) -> list[dict]:
+    records = []
+    for component in components:
+        result = normalize_component(component, context="all_role")
+        normalized_value = result.normalized_value or canonical_component(component)
+        if result.severity:
+            records.append(
+                build_validation_record(
+                    row_index,
+                    month_label,
+                    "all_role_components",
+                    result.raw_value,
+                    result.normalized_value,
+                    result.severity,
+                    result.message,
+                    result.suggested_fix,
+                )
+            )
+        elif normalized_value not in VALID_ROLE_COMPONENTS:
+            records.append(
+                build_validation_record(
+                    row_index,
+                    month_label,
+                    "all_role_components",
+                    component,
+                    normalized_value,
+                    "error",
+                    "all_role_components only accepts role components.",
+                    "Remove non-role components from all_role_components.",
+                )
+            )
+    return records
+
+
+def build_validation_record(
+    row_index: int,
+    month_label: str,
+    field: str,
+    raw_value: str,
+    normalized_value: str,
+    severity: str,
+    message: str,
+    suggested_fix: str,
+) -> dict:
+    return {
+        "row_index": int(row_index),
+        "month_label": month_label,
+        "field": field,
+        "raw_value": raw_value,
+        "normalized_value": normalized_value,
+        "severity": severity,
+        "message": message,
+        "suggested_fix": suggested_fix,
+    }
 
 
 def build_seasonal_warning(

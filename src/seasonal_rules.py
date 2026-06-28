@@ -1,21 +1,42 @@
-SEASONAL_ALLOWED_MONTHS = {
+KNOWN_SEASONAL_TYPES = {
+    "halloween",
+    "holiday",
+    "thanksgiving",
+    "valentines",
+    "easter",
+}
+SEASONAL_TYPE_MONTHS = {
+    "halloween": {10},
+    "holiday": {12},
+    "thanksgiving": {11},
+}
+SEASONAL_COMPONENT_MONTHS = {
     "halloween": {10},
     "halloween_call_to_arms": {10},
     "holiday": {12},
     "holiday_call_to_arms": {12},
     "holiday_rewards": {12},
 }
-SEASONAL_COMPONENT_MONTHS = SEASONAL_ALLOWED_MONTHS.copy()
+SEASONAL_ALLOWED_MONTHS = {
+    **SEASONAL_TYPE_MONTHS,
+    **SEASONAL_COMPONENT_MONTHS,
+}
 SEASONAL_DISPLAY_GROUPS = {
     "halloween": "halloween",
     "halloween_call_to_arms": "halloween",
     "holiday": "holiday",
     "holiday_call_to_arms": "holiday",
     "holiday_rewards": "holiday",
+    "thanksgiving": "thanksgiving",
+    "valentines": "valentines",
+    "easter": "easter",
 }
 SEASONAL_DISPLAY_LABELS = {
     "halloween": "Halloween",
     "holiday": "Holiday",
+    "thanksgiving": "Thanksgiving",
+    "valentines": "Valentines",
+    "easter": "Easter",
     "holiday_call_to_arms": "Holiday Call To Arms",
     "halloween_call_to_arms": "Halloween Call To Arms",
     "holiday_rewards": "Holiday Rewards",
@@ -83,14 +104,13 @@ def get_seasonal_prediction_multiplier(
     if not is_component_prediction_eligible(component, predicted_next_month):
         return 0.0
 
-    seasonal_key = get_seasonal_key(component, seasonal_type)
-    if seasonal_key not in SEASONAL_ALLOWED_MONTHS:
+    seasonal_key = get_component_seasonal_key(component, seasonal_type)
+    if seasonal_key not in SEASONAL_COMPONENT_MONTHS:
         return 1.0
 
     if is_seasonal_sub_category_allowed(
-        component,
+        seasonal_key,
         predicted_next_month,
-        seasonal_type=seasonal_type,
     ):
         return SEASONAL_MONTH_BOOST
     return OUT_OF_SEASON_PENALTY
@@ -104,6 +124,19 @@ def get_seasonal_key(
     if normalized_type:
         return normalized_type
     return str(component).strip().lower()
+
+
+def get_component_seasonal_key(
+    component: str,
+    seasonal_type: str | None = None,
+) -> str:
+    normalized_component = str(component or "").strip().lower()
+    normalized_type = str(seasonal_type or "").strip().lower()
+    if normalized_component in SEASONAL_COMPONENT_MONTHS:
+        return normalized_component
+    if normalized_type in SEASONAL_COMPONENT_MONTHS:
+        return normalized_type
+    return normalized_component
 
 
 def normalize_seasonal_display_group(value: str | None) -> str:

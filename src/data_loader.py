@@ -2,6 +2,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.taxonomy import (
+    VALID_NON_ROLE_COMPONENTS,
+    VALID_PRIMARY_CATEGORIES,
+    VALID_ROLE_COMPONENTS,
+    canonical_component,
+    normalize_component,
+)
+
 
 DATA_PATH = Path("data/raw/rdo_benefits_raw.csv")
 
@@ -24,22 +32,12 @@ REQUIRED_COLUMNS = [
     "source_url",
     "confidence",
 ]
+OPTIONAL_COLUMNS = ["note"]
 
 PRIMARY_CATEGORY_ORDER = ["role", "non_role", "both"]
-VALID_PRIMARY_CATEGORIES = set(PRIMARY_CATEGORY_ORDER)
 NORMALIZABLE_PRIMARY_CATEGORIES = {"all_role", "mixed", "seasonal"}
-ROLE_COMPONENTS = {
-    "bounty_hunter",
-    "trader",
-    "collector",
-    "naturalist",
-    "moonshiner",
-}
-RARE_NON_ROLE_ALIASES = {
-    "story_missions": "other_non_role",
-    "showdown": "other_non_role",
-    "gang_hideouts": "other_non_role",
-}
+ROLE_COMPONENTS = VALID_ROLE_COMPONENTS
+NON_ROLE_COMPONENTS = VALID_NON_ROLE_COMPONENTS
 BOOLEAN_COLUMNS = ["is_mixed", "is_all_role", "is_seasonal"]
 TRUE_VALUES = {"true", "1", "yes"}
 FALSE_VALUES = {"false", "0", "no", ""}
@@ -79,6 +77,10 @@ def load_raw_benefits(path: str | Path = DATA_PATH) -> pd.DataFrame:
     if df.empty:
         raise ValueError("CSV has headers but no data rows.")
 
+    for column in OPTIONAL_COLUMNS:
+        if column not in df.columns:
+            df[column] = ""
+
     return clean_raw_benefits(df)
 
 
@@ -86,20 +88,31 @@ def clean_raw_benefits(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize values used by filtering, expansion, and prediction."""
     clean_df = df.copy()
 
-    for column in clean_df.columns:
-        if clean_df[column].dtype == object:
-            clean_df[column] = clean_df[column].fillna("").astype(str).str.strip()
+    for column in OPTIONAL_COLUMNS:
+        if column not in clean_df.columns:
+            clean_df[column] = ""
 
+    for column in clean_df.columns:
+        clean_df[column] = clean_df[column].fillna("").astype(str).str.strip()
+
+    for column in [
+        "primary_category",
+        "primary_sub_category",
+        "mixed_components",
+        "all_role_components",
+        "seasonal_type",
+    ]:
+        clean_df[f"raw_{column}"] = clean_df[column]
     clean_df["confidence"] = clean_df["confidence"].str.lower()
     clean_df["primary_category"] = clean_df["primary_category"].str.lower()
     clean_df["primary_sub_category"] = clean_df["primary_sub_category"].apply(
-        lambda value: normalize_component_string(value, normalize_rare_non_role=True)
+        lambda value: normalize_component_string(value, context="mixed")
     )
     clean_df["mixed_components"] = clean_df["mixed_components"].apply(
-        lambda value: normalize_component_string(value, normalize_rare_non_role=True)
+        lambda value: normalize_component_string(value, context="mixed")
     )
     clean_df["all_role_components"] = clean_df["all_role_components"].apply(
-        normalize_component_string
+        lambda value: normalize_component_string(value, context="all_role")
     )
     clean_df["component_weight_rule"] = (
         clean_df["component_weight_rule"].str.lower()
@@ -170,15 +183,16 @@ def parse_boolean(value: object, column_name: str = "boolean") -> bool:
 
 def parse_components(
     value: object,
-    normalize_rare_non_role: bool = False,
+    context: str = "mixed",
 ) -> list[str]:
     """Split a pipe-separated component field into normalized unique values."""
     components = []
     seen = set()
     for raw_component in str(value or "").split("|"):
-        component = raw_component.strip().lower()
-        if normalize_rare_non_role:
-            component = RARE_NON_ROLE_ALIASES.get(component, component)
+        if context == "raw":
+            component = canonical_component(raw_component)
+        else:
+            component = normalize_component(raw_component, context=context).normalized_value
         if component and component not in seen:
             components.append(component)
             seen.add(component)
@@ -187,12 +201,12 @@ def parse_components(
 
 def normalize_component_string(
     value: object,
-    normalize_rare_non_role: bool = False,
+    context: str = "mixed",
 ) -> str:
     return "|".join(
         parse_components(
             value,
-            normalize_rare_non_role=normalize_rare_non_role,
+            context=context,
         )
     )
 

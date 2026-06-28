@@ -21,15 +21,18 @@ from src.parameter_optimizer import (
     OptimizationResult,
 )
 from src.seasonal_rules import (
+    KNOWN_SEASONAL_TYPES,
     OUT_OF_SEASON_PENALTY,
     SEASONAL_ALLOWED_MONTHS,
     SEASONAL_COMPONENT_MONTHS,
     SEASONAL_MONTH_BOOST,
+    SEASONAL_TYPE_MONTHS,
 )
+from src.taxonomy import taxonomy_payload
 
 
 CACHE_PATH = Path(".cache/optimization_result.json")
-LOGIC_VERSION = "role-nonrole-recency-v1"
+LOGIC_VERSION = "role-nonrole-recency-taxonomy-thanksgiving-note-v1"
 
 
 @dataclass
@@ -125,15 +128,20 @@ def build_rules_payload() -> dict[str, Any]:
         "non_role_recency_multipliers": NON_ROLE_RECENCY_MULTIPLIERS,
         "role_historical_weight_power": ROLE_HISTORICAL_WEIGHT_POWER,
         "role_recency_multipliers": ROLE_RECENCY_MULTIPLIERS,
+        "known_seasonal_types": sorted(KNOWN_SEASONAL_TYPES),
         "seasonal_allowed_months": {
             key: sorted(value) for key, value in SEASONAL_ALLOWED_MONTHS.items()
         },
         "seasonal_component_months": {
             key: sorted(value) for key, value in SEASONAL_COMPONENT_MONTHS.items()
         },
+        "seasonal_type_months": {
+            key: sorted(value) for key, value in SEASONAL_TYPE_MONTHS.items()
+        },
         "seasonal_month_boost": SEASONAL_MONTH_BOOST,
         "out_of_season_penalty": OUT_OF_SEASON_PENALTY,
         "rule_display_epsilon": RULE_DISPLAY_EPSILON,
+        "taxonomy": taxonomy_payload(),
     }
 
 

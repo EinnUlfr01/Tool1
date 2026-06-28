@@ -5,6 +5,7 @@ from src.probability import calculate_probability
 from src.seasonal_rules import get_seasonal_display_label
 from src.ui_helpers import (
     build_all_benefits_table,
+    build_raw_data_table,
     build_simple_category_probability_table,
     load_page_data,
     render_debug_mode_toggle,
@@ -14,6 +15,7 @@ from src.validator import (
     find_happening_benefits,
     find_missing_months,
     find_seasonal_quality_warnings,
+    validate_sub_category_data,
 )
 
 
@@ -65,6 +67,30 @@ else:
 if analysis_df.empty:
     st.info("No rows are available for analysis after excluding confidence = low.")
 
+validation_report = validate_sub_category_data(analysis_df)
+validation_counts = validation_report["severity"].value_counts() if not validation_report.empty else {}
+validation_warnings = int(validation_counts.get("warning", 0))
+validation_errors = int(validation_counts.get("error", 0))
+
+if validation_warnings == 0 and validation_errors == 0:
+    st.success("Data OK: no sub-category validation warnings or errors found.")
+else:
+    st.warning(
+        f"Sub-category validation found {validation_warnings} warning(s) "
+        f"and {validation_errors} error(s)."
+    )
+    if validation_errors > 0:
+        st.warning(
+            "Prediction may be unreliable because sub-category validation has errors."
+        )
+
+if debug_mode:
+    st.subheader("Sub-category Validation")
+    if validation_report.empty:
+        st.info("No sub-category validation records found.")
+    else:
+        st.dataframe(validation_report, width="stretch", hide_index=True)
+
 seasonal_warnings = find_seasonal_quality_warnings(analysis_df)
 if seasonal_warnings.empty:
     st.success("No seasonal data quality warnings found.")
@@ -81,12 +107,8 @@ st.dataframe(all_benefits_table, width="stretch", hide_index=True)
 if debug_mode:
     st.header("C. Raw Data")
 
-    source_columns = ["source_name", "source_url", "confidence"]
-    raw_display_columns = [
-        column for column in filtered_df.columns if column not in source_columns
-    ] + [column for column in source_columns if column in filtered_df.columns]
     st.dataframe(
-        filtered_df[raw_display_columns],
+        build_raw_data_table(filtered_df),
         width="stretch",
         hide_index=True,
     )

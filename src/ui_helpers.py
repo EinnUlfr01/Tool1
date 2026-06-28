@@ -4,6 +4,8 @@ import pandas as pd
 from src.data_loader import (
     CONFIDENCE_OPTIONS,
     DATA_PATH,
+    OPTIONAL_COLUMNS,
+    REQUIRED_COLUMNS,
     filter_by_confidence,
     filter_by_year,
     get_analysis_data,
@@ -11,6 +13,7 @@ from src.data_loader import (
     load_raw_benefits,
 )
 from src.probability import get_sub_category_display_label
+from src.taxonomy import KNOWN_RARE_NON_ROLE_ALIASES
 
 
 @st.cache_data
@@ -92,8 +95,44 @@ def format_component_label(value: object) -> str:
     return get_sub_category_display_label(normalized_value)
 
 
+def format_raw_component_label(value: object) -> str:
+    return format_component_label(value)
+
+
+def format_component_list_label(value: object) -> str:
+    components = [
+        format_raw_component_label(component)
+        for component in str(value or "").split("|")
+        if str(component).strip()
+    ]
+    return " / ".join(components) if components else "-"
+
+
+def build_raw_data_table(df: pd.DataFrame) -> pd.DataFrame:
+    columns = REQUIRED_COLUMNS + [
+        column for column in OPTIONAL_COLUMNS if column in df.columns
+    ]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    display_df = df.copy()
+    raw_field_map = {
+        "primary_category": "raw_primary_category",
+        "primary_sub_category": "raw_primary_sub_category",
+        "mixed_components": "raw_mixed_components",
+        "all_role_components": "raw_all_role_components",
+        "seasonal_type": "raw_seasonal_type",
+    }
+    for column, raw_column in raw_field_map.items():
+        if column in display_df.columns and raw_column in display_df.columns:
+            display_df[column] = display_df[raw_column]
+
+    visible_columns = [column for column in columns if column in display_df.columns]
+    return display_df[visible_columns].reset_index(drop=True)
+
+
 def build_all_benefits_table(df: pd.DataFrame) -> pd.DataFrame:
-    columns = ["Month", "Benefit Type", "Benefits Main Info", "Source"]
+    columns = ["Month", "Benefit Type", "Benefits Main Info", "Note", "Source"]
     if df.empty:
         return pd.DataFrame(columns=columns)
 
@@ -106,10 +145,17 @@ def build_all_benefits_table(df: pd.DataFrame) -> pd.DataFrame:
     display_df["Benefits Main Info"] = display_df.apply(
         lambda row: first_non_empty(
             row.get("multiplier_info", ""),
-            row.get("note", ""),
             default="-",
         ),
         axis=1,
+    )
+    note_values = (
+        display_df["note"]
+        if "note" in display_df.columns
+        else pd.Series("", index=display_df.index)
+    )
+    display_df["Note"] = note_values.apply(
+        lambda value: first_non_empty(value, default="-")
     )
     display_df["Source"] = display_df.apply(
         lambda row: first_non_empty(
@@ -134,15 +180,39 @@ def build_all_benefits_table(df: pd.DataFrame) -> pd.DataFrame:
     return display_df[columns].reset_index(drop=True)
 
 
+def build_other_non_role_mapping_table() -> pd.DataFrame:
+    mapping_rows = [
+        ("story_missions", "Story Missions"),
+        ("gang_hideouts", "Gang Hideouts"),
+        ("showdown", "Showdown"),
+    ]
+    return pd.DataFrame(
+        [
+            {
+                "Raw Type": display_label,
+                "Counted As": get_sub_category_display_label(
+                    KNOWN_RARE_NON_ROLE_ALIASES[raw_value]
+                ),
+            }
+            for raw_value, display_label in mapping_rows
+        ]
+    )
+
+
 def build_benefit_type_label(row: pd.Series) -> str:
-    sub_category = str(row.get("primary_sub_category", "") or "").strip()
+    sub_category = first_non_empty(
+        row.get("raw_primary_sub_category", ""),
+        row.get("raw_mixed_components", "") if bool(row.get("is_mixed", False)) else "",
+        row.get("primary_sub_category", ""),
+        default="",
+    )
     if sub_category:
-        return " / ".join(
-            format_component_label(component)
-            for component in sub_category.split("|")
-            if str(component).strip()
-        )
-    primary_category = str(row.get("primary_category", "") or "").strip()
+        return format_component_list_label(sub_category)
+    primary_category = first_non_empty(
+        row.get("raw_primary_category", ""),
+        row.get("primary_category", ""),
+        default="",
+    )
     return format_category_label(primary_category)
 
 

@@ -14,6 +14,7 @@ from src.conditional_predictor import (
 )
 from src.data_loader import (
     ROLE_COMPONENTS,
+    clean_raw_benefits,
     expand_benefit_components,
     load_raw_benefits,
 )
@@ -26,14 +27,21 @@ from src.optimization_cache import (
 from src.parameter_optimizer import OptimizationResult, empty_optimizer_table
 from src.probability import get_sub_category_display_label
 from src.seasonal_rules import (
+    KNOWN_SEASONAL_TYPES,
+    SEASONAL_COMPONENT_MONTHS,
+    SEASONAL_TYPE_MONTHS,
     get_component_eligible_months,
+    is_seasonal_sub_category_allowed,
     is_component_prediction_eligible,
 )
 from src.ui_helpers import (
     build_all_benefits_table,
+    build_other_non_role_mapping_table,
+    build_raw_data_table,
     build_simple_final_component_table,
     build_simple_primary_prediction_table,
 )
+from src.validator import validate_sub_category_data
 
 
 HARD_SEASONAL_COMPONENTS = {
@@ -117,10 +125,17 @@ class PredictionLogicTest(unittest.TestCase):
     def test_seasonal_rules_direct_eligibility(self):
         self.assertEqual(get_component_eligible_months("halloween"), {10})
         self.assertEqual(get_component_eligible_months("holiday_rewards"), {12})
+        self.assertEqual(SEASONAL_TYPE_MONTHS["thanksgiving"], {11})
+        self.assertTrue(is_seasonal_sub_category_allowed("thanksgiving", "2026-11"))
+        self.assertFalse(is_seasonal_sub_category_allowed("thanksgiving", "2026-07"))
         self.assertFalse(is_component_prediction_eligible("holiday_call_to_arms", "2026-07"))
         self.assertTrue(is_component_prediction_eligible("halloween_call_to_arms", "2026-10"))
         self.assertTrue(is_component_prediction_eligible("holiday_rewards", "2026-12"))
         self.assertTrue(is_component_prediction_eligible("blood_money", "2026-07"))
+        self.assertNotIn("thanksgiving", SEASONAL_COMPONENT_MONTHS)
+        self.assertIsNone(get_component_eligible_months("thanksgiving"))
+        self.assertIsNone(get_component_eligible_months("valentines"))
+        self.assertIsNone(get_component_eligible_months("easter"))
 
     def test_neutral_multipliers_do_not_render_as_applied_rules(self):
         rendered_rules = "|".join(self.final["applied_rules"].astype(str).to_list())
@@ -155,6 +170,13 @@ class PredictionLogicTest(unittest.TestCase):
         ]:
             self.assertIn(component, final_components)
 
+    def test_rare_raw_non_roles_are_grouped_in_final_global(self):
+        final_components = set(self.final["component"])
+        self.assertIn("other_non_role", final_components)
+        self.assertNotIn("story_missions", final_components)
+        self.assertNotIn("gang_hideouts", final_components)
+        self.assertNotIn("showdown", final_components)
+
     def test_final_global_total_is_one_hundred(self):
         self.assertAlmostEqual(
             float(self.final["global_probability_percent"].sum()),
@@ -176,6 +198,12 @@ class PredictionLogicTest(unittest.TestCase):
                 "naturalist",
             ],
         )
+
+    def test_trader_is_not_hard_excluded_by_thanksgiving_metadata(self):
+        final = self.build_final_for_target("2026-07")
+        final_components = set(final["component"])
+        self.assertIn("trader", final_components)
+        self.assertTrue(is_component_prediction_eligible("trader", "2026-07"))
 
     def test_all_role_rows_are_ignored_for_role_recency(self):
         expanded = expand_benefit_components(self.df)
@@ -296,6 +324,185 @@ class OptimizationCacheTest(unittest.TestCase):
             self.assertEqual(stale.status, "stale")
 
 
+class TaxonomyValidatorTest(unittest.TestCase):
+    def build_row(self, **overrides):
+        row = {
+            "month_label": "2026-01",
+            "start_date": "2026-01-01",
+            "end_date": "2026-01-28",
+            "primary_category": "non_role",
+            "primary_sub_category": "free_roam",
+            "is_mixed": "FALSE",
+            "mixed_components": "",
+            "is_all_role": "FALSE",
+            "all_role_components": "",
+            "is_seasonal": "FALSE",
+            "seasonal_type": "",
+            "multiplier_info": "Test",
+            "weight": "1",
+            "component_weight_rule": "",
+            "source_name": "test",
+            "source_url": "",
+            "confidence": "high",
+        }
+        row.update(overrides)
+        return row
+
+    def clean_rows(self, rows):
+        return clean_raw_benefits(pd.DataFrame(rows))
+
+    def test_alias_free_room_normalizes_to_free_roam(self):
+        df = self.clean_rows([self.build_row(primary_sub_category="free_room")])
+        self.assertEqual(df.loc[0, "primary_sub_category"], "free_roam")
+
+        report = validate_sub_category_data(df)
+        alias_rows = report[report["severity"].eq("info")]
+        self.assertEqual(alias_rows.iloc[0]["raw_value"], "free_room")
+        self.assertEqual(alias_rows.iloc[0]["normalized_value"], "free_roam")
+
+    def test_unknown_non_role_maps_to_other_non_role_warning(self):
+        df = self.clean_rows([self.build_row(primary_sub_category="unknown_bonus")])
+        self.assertEqual(df.loc[0, "primary_sub_category"], "other_non_role")
+
+        report = validate_sub_category_data(df)
+        warning = report[report["severity"].eq("warning")].iloc[0]
+        self.assertEqual(warning["raw_value"], "unknown_bonus")
+        self.assertEqual(warning["normalized_value"], "other_non_role")
+        self.assertEqual(
+            warning["suggested_fix"],
+            "Add taxonomy mapping if this becomes a recurring component.",
+        )
+
+    def test_known_rare_non_role_keeps_raw_and_normalizes_for_prediction(self):
+        expectations = {
+            "story_missions": "Story Missions",
+            "gang_hideouts": "Gang Hideouts",
+            "showdown": "Showdown",
+        }
+        for raw_value, display_label in expectations.items():
+            with self.subTest(raw_value=raw_value):
+                df = self.clean_rows([self.build_row(primary_sub_category=raw_value)])
+                self.assertEqual(df.loc[0, "raw_primary_sub_category"], raw_value)
+                self.assertEqual(df.loc[0, "primary_sub_category"], "other_non_role")
+
+                report = validate_sub_category_data(df)
+                info = report[report["severity"].eq("info")].iloc[0]
+                self.assertEqual(info["raw_value"], raw_value)
+                self.assertEqual(info["normalized_value"], "other_non_role")
+                self.assertEqual(
+                    info["message"],
+                    "Known rare non-role grouped under other_non_role for prediction.",
+                )
+                self.assertEqual(info["suggested_fix"], "No change needed.")
+
+                all_benefits = build_all_benefits_table(df)
+                self.assertEqual(all_benefits.loc[0, "Benefit Type"], display_label)
+
+    def test_direct_other_non_role_is_warning_not_error(self):
+        df = self.clean_rows([self.build_row(primary_sub_category="other_non_role")])
+        report = validate_sub_category_data(df)
+        warning = report[report["severity"].eq("warning")].iloc[0]
+        self.assertEqual(warning["raw_value"], "other_non_role")
+        self.assertEqual(warning["normalized_value"], "other_non_role")
+        self.assertIn("Direct other_non_role found in CSV", warning["message"])
+        self.assertFalse(report["severity"].eq("error").any())
+
+    def test_unknown_role_is_error(self):
+        df = self.clean_rows(
+            [
+                self.build_row(
+                    primary_category="role",
+                    primary_sub_category="unknown_role_name",
+                )
+            ]
+        )
+        report = validate_sub_category_data(df)
+        error = report[report["severity"].eq("error")].iloc[0]
+        self.assertEqual(error["message"], "Unknown role component.")
+
+    def test_non_role_empty_primary_sub_category_is_error(self):
+        df = self.clean_rows([self.build_row(primary_sub_category="")])
+        report = validate_sub_category_data(df)
+        self.assertTrue(
+            report["message"].str.contains(
+                "primary_sub_category is required for non_role rows",
+                regex=False,
+            ).any()
+        )
+
+    def test_all_role_components_reject_non_role_component(self):
+        df = self.clean_rows(
+            [
+                self.build_row(
+                    primary_category="role",
+                    primary_sub_category="all_roles",
+                    is_all_role="TRUE",
+                    all_role_components="bounty_hunter|blood_money",
+                )
+            ]
+        )
+        report = validate_sub_category_data(df)
+        self.assertTrue(
+            report["message"].str.contains(
+                "all_role_components only accepts role components",
+                regex=False,
+            ).any()
+        )
+
+    def test_known_seasonal_types_do_not_report_unknown_warnings(self):
+        self.assertTrue(
+            {"thanksgiving", "valentines", "easter"}.issubset(KNOWN_SEASONAL_TYPES)
+        )
+        df = self.clean_rows(
+            [
+                self.build_row(is_seasonal="TRUE", seasonal_type="thanksgiving"),
+                self.build_row(is_seasonal="TRUE", seasonal_type="valentines"),
+                self.build_row(is_seasonal="TRUE", seasonal_type="easter"),
+            ]
+        )
+        report = validate_sub_category_data(df)
+        self.assertFalse(
+            report["message"].str.contains(
+                "seasonal_type is not in current seasonal mapping",
+                regex=False,
+            ).any()
+            if not report.empty
+            else False
+        )
+
+    def test_note_is_optional_and_preserved(self):
+        df_without_note = self.clean_rows([self.build_row()])
+        self.assertIn("note", df_without_note.columns)
+        self.assertEqual(df_without_note.loc[0, "note"], "")
+
+        df_with_note = self.clean_rows(
+            [self.build_row(note="Thanksgiving event represented through Trader.")]
+        )
+        self.assertEqual(
+            df_with_note.loc[0, "note"],
+            "Thanksgiving event represented through Trader.",
+        )
+
+        primary_prediction = calculate_adjusted_primary_category_prediction(df_with_note)
+        conditional = calculate_conditional_sub_category_prediction_with_config(
+            df_with_note,
+            cooldown_config=DEFAULT_COOLDOWN_CONFIG,
+            parent_primary_prediction_df=primary_prediction.table,
+            predicted_next_month=primary_prediction.predicted_next_month,
+        )
+        final = calculate_final_global_component_prediction(conditional)
+        self.assertAlmostEqual(
+            float(primary_prediction.table["adjusted_prediction_percent"].sum()),
+            100.0,
+            places=2,
+        )
+        self.assertAlmostEqual(
+            float(final["global_probability_percent"].sum()),
+            100.0,
+            places=2,
+        )
+
+
 class SimpleUiHelperTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -316,9 +523,35 @@ class SimpleUiHelperTest(unittest.TestCase):
         table = build_all_benefits_table(self.df)
         self.assertEqual(
             list(table.columns),
-            ["Month", "Benefit Type", "Benefits Main Info", "Source"],
+            ["Month", "Benefit Type", "Benefits Main Info", "Note", "Source"],
         )
         self.assertGreater(len(table), 0)
+
+    def test_raw_data_table_uses_raw_csv_component_values(self):
+        table = build_raw_data_table(self.df)
+        raw_values = set(table["primary_sub_category"].astype(str))
+        self.assertIn("story_missions", raw_values)
+        self.assertIn("showdown|gang_hideouts|free_roam", raw_values)
+        self.assertNotIn("other_non_role|free_roam", raw_values)
+
+    def test_all_benefits_uses_raw_rare_non_role_labels(self):
+        table = build_all_benefits_table(self.df)
+        benefit_types = set(table["Benefit Type"].astype(str))
+        self.assertIn("Story Missions", benefit_types)
+        self.assertIn("Showdown / Gang Hideouts / Free Roam", benefit_types)
+        self.assertIn("Naturalist / Telegram / Gang Hideouts", benefit_types)
+
+    def test_other_non_role_mapping_table_is_compact(self):
+        table = build_other_non_role_mapping_table()
+        self.assertEqual(list(table.columns), ["Raw Type", "Counted As"])
+        self.assertEqual(
+            table.to_dict("records"),
+            [
+                {"Raw Type": "Story Missions", "Counted As": "Other Non-role"},
+                {"Raw Type": "Gang Hideouts", "Counted As": "Other Non-role"},
+                {"Raw Type": "Showdown", "Counted As": "Other Non-role"},
+            ],
+        )
 
     def test_simple_primary_table_hides_debug_columns(self):
         table = build_simple_primary_prediction_table(
@@ -387,6 +620,28 @@ class SimpleUiHelperTest(unittest.TestCase):
         ].iloc[0]
         self.assertIn("Recent non-role cooldown", blood_money_reason)
         self.assertNotIn("non_role_cooldown", blood_money_reason)
+
+
+class StreamlitRenderTest(unittest.TestCase):
+    def test_overview_hides_other_non_role_details_section(self):
+        from streamlit.testing.v1 import AppTest
+
+        app = AppTest.from_file("app.py").run(timeout=60)
+        self.assertFalse(app.exception)
+        headers = [header.value for header in app.header]
+        subheaders = [subheader.value for subheader in app.subheader]
+        self.assertNotIn("Other Non-role Details", headers)
+        self.assertNotIn("Other Non-role Details", subheaders)
+
+    def test_prediction_shows_compact_other_non_role_mapping(self):
+        from streamlit.testing.v1 import AppTest
+
+        app = AppTest.from_file("pages/02_next_month_prediction.py").run(timeout=120)
+        self.assertFalse(app.exception)
+        headers = [header.value for header in app.header]
+        subheaders = [subheader.value for subheader in app.subheader]
+        self.assertNotIn("Other Non-role Details", headers)
+        self.assertIn("Other Non-role mapping", subheaders)
 
 
 if __name__ == "__main__":
