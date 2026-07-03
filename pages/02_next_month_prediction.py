@@ -3,6 +3,7 @@ import plotly.express as px
 import streamlit as st
 
 from src.adjusted_predictor import calculate_adjusted_primary_category_prediction
+from src.candidate_scorer import PRIOR_STRENGTH_OPTIONS, score_candidates
 from src.conditional_predictor import (
     DEFAULT_COOLDOWN_CONFIG,
     calculate_conditional_sub_category_prediction_with_config,
@@ -710,6 +711,45 @@ if debug_mode:
     with st.expander("Global category to component paths"):
         st.dataframe(
             global_path_prediction_df,
+            width="stretch",
+            hide_index=True,
+        )
+
+    with st.expander("Candidate Scoring V2.1 Preview"):
+        st.caption(
+            "Preview/debug only. Monthly benefits can include multiple components "
+            "at the same time. Candidate scoring ranks individual candidates/components "
+            "and is not yet a full multi-benefit combination model."
+        )
+        scoring_prior_strength = st.selectbox(
+            "Candidate scoring prior_strength",
+            PRIOR_STRENGTH_OPTIONS,
+            index=0,
+        )
+        candidate_scoring_df = score_candidates(
+            prediction_analysis_df,
+            adjusted_prediction.predicted_next_month,
+            prior_strength=scoring_prior_strength,
+        )
+        scoring_display_columns = [
+            "rank",
+            "display_label",
+            "candidate",
+            "candidate_group",
+            "final_probability_percent",
+            "raw_score",
+            "frequency_factor",
+            "recency_factor",
+            "overdue_factor",
+            "seasonal_factor",
+            "all_role_candidate_factor",
+            "non_role_context_factor",
+            "months_since_direct",
+            "months_since_mixed",
+            "months_since_all_role",
+        ]
+        st.dataframe(
+            candidate_scoring_df[scoring_display_columns],
             width="stretch",
             hide_index=True,
         )
