@@ -83,6 +83,7 @@ def format_category_label(value: object) -> str:
         "role": "Role",
         "non_role": "Non-role",
         "both": "Both",
+        "all_role": "All Roles",
     }
     normalized_value = str(value or "").strip().lower()
     return category_labels.get(normalized_value, format_label(normalized_value))
@@ -267,6 +268,7 @@ def build_primary_reason(category: object, latest_is_all_role: bool) -> str:
             "role": "Penalized after all-role",
             "non_role": "Boosted after all-role",
             "both": "Moderately boosted after all-role",
+            "all_role": "Strongly penalized after all-role",
         }
         return reason_map.get(str(category), "Based on historical and transition pattern")
     return "Based on historical and transition pattern"

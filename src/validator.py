@@ -144,7 +144,7 @@ def validate_sub_category_data(df: pd.DataFrame) -> pd.DataFrame:
                     primary_category,
                     "error",
                     "Unknown primary category.",
-                    "Use role, non_role, or both.",
+                    "Use role, non_role, both, or all_role.",
                 )
             )
 
@@ -155,6 +155,33 @@ def validate_sub_category_data(df: pd.DataFrame) -> pd.DataFrame:
         primary_components = split_component_values(primary_raw)
         mixed_components = split_component_values(mixed_raw)
         all_role_components = split_component_values(all_role_raw)
+
+        if primary_category == "all_role" and not is_all_role:
+            records.append(
+                build_validation_record(
+                    index,
+                    month_label,
+                    "is_all_role",
+                    raw_field_value(row, "is_all_role"),
+                    str(is_all_role),
+                    "warning",
+                    "primary_category=all_role but is_all_role is FALSE.",
+                    "Set is_all_role=TRUE for all-role rows.",
+                )
+            )
+        if is_all_role and primary_category not in {"all_role", "role", "both"}:
+            records.append(
+                build_validation_record(
+                    index,
+                    month_label,
+                    "primary_category",
+                    raw_field_value(row, "primary_category"),
+                    primary_category,
+                    "warning",
+                    "is_all_role is TRUE but primary_category is not all_role.",
+                    "Use primary_category=all_role for new all-role rows.",
+                )
+            )
 
         if primary_category == "role" and not primary_components:
             if not (is_all_role and all_role_components):
@@ -184,18 +211,21 @@ def validate_sub_category_data(df: pd.DataFrame) -> pd.DataFrame:
                 )
             )
         if primary_category == "both" and not mixed_components:
-            records.append(
-                build_validation_record(
-                    index,
-                    month_label,
-                    "mixed_components",
-                    mixed_raw,
-                    "",
-                    "error",
-                    "mixed_components is required for both rows.",
-                    "Fill pipe-separated valid role/non-role components.",
+            if is_all_role and all_role_components:
+                pass
+            else:
+                records.append(
+                    build_validation_record(
+                        index,
+                        month_label,
+                        "mixed_components",
+                        mixed_raw,
+                        "",
+                        "error",
+                        "mixed_components is required for both rows.",
+                        "Fill pipe-separated valid role/non-role components.",
+                    )
                 )
-            )
         if is_mixed and not mixed_components:
             records.append(
                 build_validation_record(
@@ -313,7 +343,7 @@ def should_skip_primary_components(
     all_role_components: list[str],
 ) -> bool:
     normalized = {canonical_component(component) for component in primary_components}
-    return bool(is_all_role and all_role_components and normalized == {"all_roles"})
+    return bool(is_all_role and all_role_components and normalized <= {"all_role"})
 
 
 def component_context_for_primary(primary_category: str) -> str:
@@ -321,6 +351,8 @@ def component_context_for_primary(primary_category: str) -> str:
         return "role"
     if primary_category == "non_role":
         return "non_role"
+    if primary_category == "all_role":
+        return "all_role"
     return "mixed"
 
 

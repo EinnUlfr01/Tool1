@@ -75,9 +75,12 @@ class PredictionLogicTest(unittest.TestCase):
         )
         return calculate_final_global_component_prediction(conditional)
 
-    def test_primary_prediction_has_only_three_categories_after_all_role(self):
+    def test_primary_prediction_includes_all_role_category_after_all_role(self):
         table = self.primary_prediction.table
-        self.assertEqual(set(table["primary_category"]), {"role", "non_role", "both"})
+        self.assertEqual(
+            set(table["primary_category"]),
+            {"role", "non_role", "both", "all_role"},
+        )
         self.assertAlmostEqual(
             float(table["adjusted_prediction_percent"].sum()),
             100.0,
@@ -88,6 +91,7 @@ class PredictionLogicTest(unittest.TestCase):
         self.assertEqual(multipliers["role"], 0.45)
         self.assertEqual(multipliers["non_role"], 1.45)
         self.assertEqual(multipliers["both"], 1.15)
+        self.assertEqual(multipliers["all_role"], 0.10)
 
     def test_target_month_7_excludes_hard_seasonal_components(self):
         final_components = set(self.final["component"])
@@ -448,6 +452,50 @@ class TaxonomyValidatorTest(unittest.TestCase):
                 regex=False,
             ).any()
         )
+
+    def test_all_role_schema_is_valid_and_effective(self):
+        df = self.clean_rows(
+            [
+                self.build_row(
+                    primary_category="all_role",
+                    primary_sub_category="all_role",
+                    is_all_role="TRUE",
+                    all_role_components=(
+                        "bounty_hunter|trader|collector|moonshiner|naturalist"
+                    ),
+                )
+            ]
+        )
+        self.assertEqual(df.loc[0, "primary_category"], "all_role")
+        self.assertEqual(df.loc[0, "primary_sub_category"], "all_role")
+        self.assertEqual(df.loc[0, "effective_primary_category"], "all_role")
+        self.assertEqual(df.loc[0, "effective_candidate"], "all_role")
+        self.assertFalse(validate_sub_category_data(df)["severity"].eq("error").any())
+
+    def test_legacy_all_role_rows_normalize_to_effective_all_role(self):
+        for primary_category in ["role", "both"]:
+            with self.subTest(primary_category=primary_category):
+                df = self.clean_rows(
+                    [
+                        self.build_row(
+                            primary_category=primary_category,
+                            primary_sub_category="all_roles",
+                            is_all_role="TRUE",
+                            all_role_components=(
+                                "bounty_hunter|trader|collector|moonshiner|naturalist"
+                            ),
+                        )
+                    ]
+                )
+                self.assertEqual(df.loc[0, "primary_category"], "all_role")
+                self.assertEqual(df.loc[0, "primary_sub_category"], "all_role")
+                self.assertEqual(df.loc[0, "effective_candidate"], "all_role")
+                self.assertFalse(
+                    validate_sub_category_data(df)["severity"].eq("error").any()
+                )
+
+    def test_all_role_display_label(self):
+        self.assertEqual(get_sub_category_display_label("all_role"), "All Roles")
 
     def test_known_seasonal_types_do_not_report_unknown_warnings(self):
         self.assertTrue(

@@ -44,7 +44,7 @@ SEASONAL_OPTIONS = [
     "holiday_call_to_arms",
     "holiday_rewards",
 ]
-PRIMARY_CATEGORY_OPTIONS = ["role", "non_role", "both", "seasonal"]
+PRIMARY_CATEGORY_OPTIONS = ["role", "non_role", "both", "all_role", "seasonal"]
 SEASONAL_TYPE_OPTIONS = [
     "halloween",
     "holiday",
@@ -98,6 +98,8 @@ def get_next_month_label(df: pd.DataFrame) -> str:
 def infer_component_category(component: str, component_type: str = "") -> str:
     normalized_component = str(component or "").strip().lower()
     normalized_type = str(component_type or "").strip().lower()
+    if normalized_component in {"all_role", "all_roles"}:
+        return "all_role"
     if normalized_component in VALID_SEASONAL_COMPONENTS:
         return "seasonal"
     if normalized_type in {"role", "non_role"}:
@@ -138,6 +140,8 @@ def get_top_component(final_component_df: pd.DataFrame) -> TopComponent | None:
 def get_subcategory_options(primary_category: str) -> list[str]:
     normalized_category = str(primary_category or "").strip().lower()
     if normalized_category == "role":
+        return ROLE_OPTIONS.copy()
+    if normalized_category == "all_role":
         return ROLE_OPTIONS.copy()
     if normalized_category == "non_role":
         return NON_ROLE_OPTIONS.copy()
@@ -186,7 +190,9 @@ def build_new_month_row(
     if not month_label:
         raise ValueError("month_label is required.")
     if normalized_category not in PRIMARY_CATEGORY_OPTIONS:
-        raise ValueError("primary_category must be role, non_role, both, or seasonal.")
+        raise ValueError(
+            "primary_category must be role, non_role, both, all_role, or seasonal."
+        )
     if not selected_components:
         raise ValueError("At least one primary_sub_category is required.")
     if "other_non_role" in selected_components and len(selected_components) == 1:
@@ -194,21 +200,24 @@ def build_new_month_row(
             "other_non_role cannot be the only selected sub-category. Choose a specific raw non-role type when known."
         )
 
-    primary_sub_category = "|".join(selected_components)
-    is_mixed = normalized_category == "both"
-    is_all_role = set(selected_components) == set(ROLE_OPTIONS)
+    is_all_role = (
+        normalized_category == "all_role" or set(selected_components) == set(ROLE_OPTIONS)
+    )
+    output_category = "all_role" if is_all_role else normalized_category
+    primary_sub_category = "all_role" if is_all_role else "|".join(selected_components)
+    is_mixed = output_category == "both"
     row = {column: "" for column in existing_columns}
     row.update(
         {
             "month_label": month_label,
             "start_date": format_csv_date(start_date),
             "end_date": "Happening",
-            "primary_category": normalized_category,
+            "primary_category": output_category,
             "primary_sub_category": primary_sub_category,
             "multiplier_info": str(multiplier_info or "").strip(),
-            "is_seasonal": bool_to_csv(is_seasonal or normalized_category == "seasonal"),
+            "is_seasonal": bool_to_csv(is_seasonal or output_category == "seasonal"),
             "seasonal_type": str(seasonal_type or "").strip().lower()
-            if (is_seasonal or normalized_category == "seasonal")
+            if (is_seasonal or output_category == "seasonal")
             else "",
             "is_mixed": bool_to_csv(is_mixed),
             "mixed_components": primary_sub_category if is_mixed else "",

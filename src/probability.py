@@ -13,6 +13,7 @@ ROLE_ORDER = [
 ]
 
 ALL_ROLE_ORDER = [
+    "all_role",
 ]
 
 NON_ROLE_ORDER = [
@@ -38,6 +39,7 @@ SEASONAL_ORDER = [
 
 OTHER_LABEL = "Other"
 SUB_CATEGORY_DISPLAY_LABELS = {
+    "all_role": "All Roles",
     "other_non_role": "Other Non-role",
     "halloween": "Halloween",
     "holiday": "Holiday",

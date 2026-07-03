@@ -92,7 +92,7 @@ class MonthlyUpdateHelperTest(unittest.TestCase):
         self.assertEqual(row["is_mixed"], "TRUE")
         self.assertEqual(row["mixed_components"], "collector|free_roam")
 
-    def test_all_roles_sets_all_role_fields(self):
+    def test_all_role_sets_all_role_schema(self):
         row = build_new_month_row(
             CSV_COLUMNS,
             month_label="2026-07",
@@ -100,6 +100,21 @@ class MonthlyUpdateHelperTest(unittest.TestCase):
             primary_category="role",
             primary_sub_categories=ROLE_OPTIONS,
         )
+        self.assertEqual(row["primary_category"], "all_role")
+        self.assertEqual(row["primary_sub_category"], "all_role")
+        self.assertEqual(row["is_all_role"], "TRUE")
+        self.assertEqual(row["all_role_components"], "|".join(ROLE_OPTIONS))
+
+    def test_explicit_all_role_sets_all_role_schema(self):
+        row = build_new_month_row(
+            CSV_COLUMNS,
+            month_label="2026-07",
+            start_date=date(2026, 7, 1),
+            primary_category="all_role",
+            primary_sub_categories=ROLE_OPTIONS,
+        )
+        self.assertEqual(row["primary_category"], "all_role")
+        self.assertEqual(row["primary_sub_category"], "all_role")
         self.assertEqual(row["is_all_role"], "TRUE")
         self.assertEqual(row["all_role_components"], "|".join(ROLE_OPTIONS))
 

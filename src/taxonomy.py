@@ -8,6 +8,11 @@ VALID_PRIMARY_CATEGORIES = {
     "role",
     "non_role",
     "both",
+    "all_role",
+}
+
+VALID_ALL_ROLE_CANDIDATES = {
+    "all_role",
 }
 
 VALID_ROLE_COMPONENTS = {
@@ -55,6 +60,9 @@ KNOWN_RARE_NON_ROLE_ALIASES = {
 }
 
 SUBCATEGORY_ALIASES = {
+    "all roles": "all_role",
+    "all-role": "all_role",
+    "all_roles": "all_role",
     "free_room": "free_roam",
     "free roam": "free_roam",
     "freeroam": "free_roam",
@@ -89,7 +97,10 @@ SUBCATEGORY_ALIASES = {
 }
 
 VALID_PREDICTION_COMPONENTS = (
-    VALID_ROLE_COMPONENTS | VALID_NON_ROLE_COMPONENTS | VALID_SEASONAL_COMPONENTS
+    VALID_ROLE_COMPONENTS
+    | VALID_NON_ROLE_COMPONENTS
+    | VALID_SEASONAL_COMPONENTS
+    | VALID_ALL_ROLE_CANDIDATES
 )
 
 
@@ -198,6 +209,7 @@ def normalize_component(
 def taxonomy_payload() -> dict[str, object]:
     return {
         "valid_primary_categories": sorted(VALID_PRIMARY_CATEGORIES),
+        "valid_all_role_candidates": sorted(VALID_ALL_ROLE_CANDIDATES),
         "valid_role_components": sorted(VALID_ROLE_COMPONENTS),
         "valid_non_role_components": sorted(VALID_NON_ROLE_COMPONENTS),
         "valid_seasonal_components": sorted(VALID_SEASONAL_COMPONENTS),

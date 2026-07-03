@@ -34,8 +34,9 @@ REQUIRED_COLUMNS = [
 ]
 OPTIONAL_COLUMNS = ["note"]
 
-PRIMARY_CATEGORY_ORDER = ["role", "non_role", "both"]
-NORMALIZABLE_PRIMARY_CATEGORIES = {"all_role", "mixed", "seasonal"}
+PRIMARY_CATEGORY_ORDER = ["role", "non_role", "both", "all_role"]
+PRIMARY_CATEGORY_ALIASES = {"all_roles": "all_role"}
+NORMALIZABLE_PRIMARY_CATEGORIES = {"mixed", "seasonal"}
 ROLE_COMPONENTS = VALID_ROLE_COMPONENTS
 NON_ROLE_COMPONENTS = VALID_NON_ROLE_COMPONENTS
 BOOLEAN_COLUMNS = ["is_mixed", "is_all_role", "is_seasonal"]
@@ -104,7 +105,9 @@ def clean_raw_benefits(df: pd.DataFrame) -> pd.DataFrame:
     ]:
         clean_df[f"raw_{column}"] = clean_df[column]
     clean_df["confidence"] = clean_df["confidence"].str.lower()
-    clean_df["primary_category"] = clean_df["primary_category"].str.lower()
+    clean_df["primary_category"] = clean_df["primary_category"].apply(
+        normalize_primary_category_key
+    )
     clean_df["primary_sub_category"] = clean_df["primary_sub_category"].apply(
         lambda value: normalize_component_string(value, context="mixed")
     )
@@ -142,15 +145,22 @@ def clean_raw_benefits(df: pd.DataFrame) -> pd.DataFrame:
     )
     if invalid_categories:
         raise ValueError(
-            "CSV primary_category only accepts role, non_role, or both. "
+            "CSV primary_category only accepts role, non_role, both, or all_role. "
             "Invalid value(s): "
             + ", ".join(invalid_categories)
         )
 
-    clean_df["primary_category"] = clean_df.apply(
-        normalize_primary_category,
+    clean_df["effective_primary_category"] = clean_df.apply(
+        get_effective_primary_category,
         axis=1,
     )
+    clean_df["effective_primary_sub_category"] = clean_df.apply(
+        get_effective_primary_sub_category,
+        axis=1,
+    )
+    clean_df["effective_candidate"] = clean_df["effective_primary_sub_category"]
+    clean_df["primary_category"] = clean_df["effective_primary_category"]
+    clean_df["primary_sub_category"] = clean_df["effective_primary_sub_category"]
 
     invalid_months = pd.to_datetime(
         clean_df["month_label"],
@@ -211,8 +221,13 @@ def normalize_component_string(
     )
 
 
+def normalize_primary_category_key(value: object) -> str:
+    primary_category = str(value or "").strip().lower()
+    return PRIMARY_CATEGORY_ALIASES.get(primary_category, primary_category)
+
+
 def normalize_primary_category(row: pd.Series) -> str:
-    primary_category = str(row.get("primary_category", "")).strip().lower()
+    primary_category = normalize_primary_category_key(row.get("primary_category", ""))
     if primary_category in VALID_PRIMARY_CATEGORIES:
         return primary_category
     if primary_category not in NORMALIZABLE_PRIMARY_CATEGORIES:
@@ -227,6 +242,18 @@ def normalize_primary_category(row: pd.Series) -> str:
     if has_role:
         return "role"
     return "non_role"
+
+
+def get_effective_primary_category(row: pd.Series) -> str:
+    if bool(row.get("is_all_role", False)):
+        return "all_role"
+    return normalize_primary_category(row)
+
+
+def get_effective_primary_sub_category(row: pd.Series) -> str:
+    if bool(row.get("is_all_role", False)):
+        return "all_role"
+    return str(row.get("primary_sub_category", "")).strip().lower()
 
 
 def get_model_components_for_row(row: pd.Series) -> list[str]:

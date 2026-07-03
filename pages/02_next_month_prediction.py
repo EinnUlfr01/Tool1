@@ -589,10 +589,10 @@ metric_col_3.metric("Previous category", adjusted_prediction.previous_category)
 
 if adjusted_prediction.latest_is_all_role:
     st.info(
-        "Latest month is marked is_all_role=TRUE. The tool keeps it under "
-        "primary_category=role, but applies after-all-role rules: role is strongly "
-        "penalized, non_role is strongly boosted, and both is moderately boosted. "
-        "all_role is not treated as a standalone primary category."
+        "Latest month is marked is_all_role=TRUE. The tool treats it as "
+        "primary_category=all_role and applies after-all-role rules: role is strongly "
+        "penalized, non_role is strongly boosted, both is moderately boosted, and "
+        "repeat All Roles is strongly penalized."
     )
 
 if debug_mode:

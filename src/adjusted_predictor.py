@@ -19,12 +19,13 @@ PREDICTION_COLUMNS = [
     "adjusted_prediction_percent",
 ]
 
+ALL_ROLE_REPEAT_PENALTY = 0.10
 AFTER_ALL_ROLE_MULTIPLIERS = {
     "role": 0.45,
     "non_role": 1.45,
     "both": 1.15,
+    "all_role": ALL_ROLE_REPEAT_PENALTY,
 }
-ALL_ROLE_REPEAT_PENALTY = 0.10
 MIN_PRIOR_STRENGTH = 2.0
 MAX_PRIOR_STRENGTH = 8.0
 
