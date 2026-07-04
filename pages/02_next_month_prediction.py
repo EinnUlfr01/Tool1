@@ -3,6 +3,14 @@ import plotly.express as px
 import streamlit as st
 
 from src.adjusted_predictor import calculate_adjusted_primary_category_prediction
+from src.candidate_backtester import (
+    run_candidate_walk_forward_backtest,
+    summarize_candidate_backtest_results,
+)
+from src.candidate_parameter_optimizer import (
+    CANDIDATE_PRIOR_STRENGTH_CANDIDATES,
+    optimize_candidate_scoring_parameters,
+)
 from src.candidate_scorer import PRIOR_STRENGTH_OPTIONS, score_candidates
 from src.conditional_predictor import (
     DEFAULT_COOLDOWN_CONFIG,
@@ -499,7 +507,12 @@ except ValueError as exc:
 prediction_analysis_df = page_data["full_history_analysis_df"]
 
 
-st.header("A. Auto Backtesting & Parameter Optimization")
+st.header("A. Legacy Auto Backtesting & Parameter Optimization")
+st.warning(
+    "This optimizer belongs to the legacy primary/path/component model. It does "
+    "not calibrate Candidate Scoring V2.1. Candidate Scoring V2.1 uses default "
+    "prior_strength=3 and debug range [3,4,5]."
+)
 
 selected_prior_strength = DEFAULT_PRIOR_STRENGTH
 selected_cooldown_config = DEFAULT_COOLDOWN_CONFIG.copy()
@@ -715,11 +728,12 @@ if debug_mode:
             hide_index=True,
         )
 
-    with st.expander("Candidate Scoring V2.1 Preview"):
+    with st.expander("Candidate Scoring V2.1 Breakdown"):
         st.caption(
             "Preview/debug only. Monthly benefits can include multiple components "
-            "at the same time. Candidate scoring ranks individual candidates/components "
-            "and is not yet a full multi-benefit combination model."
+            "at the same time. Candidate Scoring V2.1 ranks individual "
+            "candidates/components and is not yet a full multi-benefit "
+            "combination model."
         )
         scoring_prior_strength = st.selectbox(
             "Candidate scoring prior_strength",
@@ -733,26 +747,143 @@ if debug_mode:
         )
         scoring_display_columns = [
             "rank",
-            "display_label",
             "candidate",
+            "display_label",
             "candidate_group",
-            "final_probability_percent",
-            "raw_score",
+            "valid_for_target_month",
+            "excluded_reason",
+            "base_score",
+            "frequency_factor_raw",
+            "frequency_factor_clamped",
             "frequency_factor",
+            "recent_role_pressure",
+            "recent_non_role_pressure",
+            "effective_count",
+            "direct_count",
+            "mixed_count",
+            "all_role_inclusion_count",
+            "last_direct_seen",
+            "last_mixed_seen",
+            "last_all_role_seen",
+            "months_since_direct",
+            "months_since_mixed",
+            "months_since_all_role",
+            "direct_recency_factor",
+            "mixed_recency_factor",
+            "all_role_inclusion_recency_factor",
+            "combined_recency_factor_before_clamp",
+            "combined_recency_factor",
+            "same_candidate_months_since",
+            "same_candidate_cooldown_factor",
+            "individual_non_role_recency_factor",
             "recency_factor",
             "overdue_factor",
             "seasonal_factor",
             "all_role_candidate_factor",
             "non_role_context_factor",
-            "months_since_direct",
-            "months_since_mixed",
-            "months_since_all_role",
+            "other_non_role_context_factor",
+            "other_non_role_cap_factor",
+            "rare_bucket_factor",
+            "smoothing_factor",
+            "raw_score",
+            "final_probability",
+            "final_probability_percent",
         ]
         st.dataframe(
             candidate_scoring_df[scoring_display_columns],
             width="stretch",
             hide_index=True,
         )
+
+    with st.expander("Candidate Scoring V2.1 Backtest / Calibration"):
+        st.caption(
+            "This backtest evaluates Candidate Scoring V2.1 ranking quality only. "
+            "It does not replace the main prediction output and does not evaluate "
+            "full benefit combinations."
+        )
+        st.caption(
+            "Legacy optimizer is a baseline/reference for the old prediction flow. "
+            "Candidate Scoring V2.1 is an experimental candidate ranking model. "
+            "The decision to promote Candidate Scoring V2.1 to Simple Mode is "
+            "deferred to Part 7."
+        )
+        candidate_min_train_months = st.number_input(
+            "Candidate backtest min_train_months",
+            min_value=1,
+            value=24,
+            step=1,
+        )
+        candidate_backtest_prior = st.selectbox(
+            "Candidate backtest prior_strength",
+            PRIOR_STRENGTH_OPTIONS,
+            index=0,
+        )
+        run_candidate_backtest = st.button("Run Candidate Scoring Backtest")
+        run_candidate_calibration = st.checkbox(
+            "Also run Candidate Scoring calibration for prior [3,4,5]",
+            value=False,
+        )
+
+        if run_candidate_backtest:
+            candidate_backtest_df = run_candidate_walk_forward_backtest(
+                prediction_analysis_df,
+                min_train_months=int(candidate_min_train_months),
+                prior_strength=candidate_backtest_prior,
+            )
+            if candidate_backtest_df.empty:
+                st.info(
+                    "Not enough historical data for Candidate Scoring V2.1 "
+                    f"backtest with min_train_months={int(candidate_min_train_months)}."
+                )
+            else:
+                summary = summarize_candidate_backtest_results(candidate_backtest_df)
+                summary_col_1, summary_col_2, summary_col_3, summary_col_4, summary_col_5 = st.columns(5)
+                summary_col_1.metric("Candidate Top-1", f"{summary['candidate_top1_accuracy']:.4f}")
+                summary_col_2.metric("Candidate Top-3", f"{summary['candidate_top3_accuracy']:.4f}")
+                summary_col_3.metric("Candidate Top-5", f"{summary['candidate_top5_accuracy']:.4f}")
+                summary_col_4.metric(
+                    "Avg hit rank",
+                    f"{summary['average_hit_actual_candidate_rank']:.4f}",
+                )
+                summary_col_5.metric("Miss rate", f"{summary['miss_rate']:.4f}")
+                st.dataframe(
+                    pd.DataFrame([summary]),
+                    width="stretch",
+                    hide_index=True,
+                )
+
+                if run_candidate_calibration:
+                    candidate_optimization = optimize_candidate_scoring_parameters(
+                        prediction_analysis_df,
+                        min_train_months=int(candidate_min_train_months),
+                        prior_strength_candidates=CANDIDATE_PRIOR_STRENGTH_CANDIDATES,
+                    )
+                    if not candidate_optimization.enough_data:
+                        st.info(
+                            "Not enough historical data for Candidate Scoring V2.1 "
+                            "calibration."
+                        )
+                    else:
+                        metric_col_1, metric_col_2 = st.columns(2)
+                        metric_col_1.metric(
+                            "Best candidate prior_strength",
+                            candidate_optimization.best_prior_strength,
+                        )
+                        metric_col_2.metric(
+                            "Best candidate score",
+                            f"{candidate_optimization.best_final_candidate_backtest_score:.4f}",
+                        )
+                        st.dataframe(
+                            candidate_optimization.comparison_table,
+                            width="stretch",
+                            hide_index=True,
+                        )
+
+                st.dataframe(
+                    candidate_backtest_df,
+                    width="stretch",
+                    hide_index=True,
+                )
 
 render_monthly_update_section(
     page_data["raw_df"],

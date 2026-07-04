@@ -45,6 +45,38 @@ def scored_by_candidate(rows: list[dict], target_month: str | None) -> pd.DataFr
 
 
 class CandidateScorerTest(unittest.TestCase):
+    def test_breakdown_columns_are_present(self):
+        scored = score_candidates(
+            pd.DataFrame([row("2026-01", "bounty_hunter")]),
+            "2026-07",
+        )
+        required_columns = {
+            "rank",
+            "candidate",
+            "candidate_group",
+            "base_score",
+            "frequency_factor_raw",
+            "frequency_factor_clamped",
+            "frequency_factor",
+            "recent_role_pressure",
+            "recent_non_role_pressure",
+            "recency_factor",
+            "same_candidate_cooldown_factor",
+            "individual_non_role_recency_factor",
+            "combined_recency_factor",
+            "overdue_factor",
+            "seasonal_factor",
+            "all_role_candidate_factor",
+            "non_role_context_factor",
+            "other_non_role_context_factor",
+            "other_non_role_cap_factor",
+            "rare_bucket_factor",
+            "raw_score",
+            "final_probability_percent",
+        }
+
+        self.assertTrue(required_columns.issubset(scored.columns))
+
     def test_normalized_probability_sums_to_one(self):
         scored = score_candidates(
             pd.DataFrame(
@@ -227,9 +259,10 @@ class CandidateScorerTest(unittest.TestCase):
 
         self.assertLess(bounty_hunter["combined_recency_factor_before_clamp"], 0.45)
         self.assertEqual(bounty_hunter["combined_recency_factor"], 0.45)
-        self.assertEqual(bounty_hunter["recency_factor"], 0.45)
+        self.assertEqual(bounty_hunter["same_candidate_cooldown_factor"], 0.3)
+        self.assertEqual(bounty_hunter["recency_factor"], 0.3)
 
-    def test_non_role_overdue_is_lighter_than_role_overdue(self):
+    def test_non_role_overdue_is_disabled_and_role_overdue_remains(self):
         scored = scored_by_candidate(
             [
                 row("2025-11", "bounty_hunter"),
@@ -239,7 +272,7 @@ class CandidateScorerTest(unittest.TestCase):
         )
 
         self.assertEqual(scored.loc["bounty_hunter", "overdue_factor"], 1.2)
-        self.assertEqual(scored.loc["call_to_arms", "overdue_factor"], 1.05)
+        self.assertEqual(scored.loc["call_to_arms", "overdue_factor"], 1.0)
 
     def test_non_role_context_factor(self):
         role_streak = scored_by_candidate(
@@ -264,15 +297,144 @@ class CandidateScorerTest(unittest.TestCase):
             "2026-07",
         )
 
-        self.assertEqual(
+        self.assertGreater(
+            role_streak.loc["call_to_arms", "non_role_context_factor"],
+            1.0,
+        )
+        self.assertLessEqual(
             role_streak.loc["call_to_arms", "non_role_context_factor"],
             1.2,
         )
-        self.assertAlmostEqual(
-            previous_all_role.loc["call_to_arms", "non_role_context_factor"],
-            1.155,
-            places=4,
+        self.assertGreater(
+            previous_all_role.loc["call_to_arms", "recent_role_pressure"],
+            0,
         )
+
+    def test_frequency_factor_is_clamped_to_conservative_range(self):
+        rows = [row(f"2024-{month:02d}", "bounty_hunter") for month in range(1, 13)]
+        rows += [row("2025-01", "call_to_arms", primary_category="non_role")]
+        scored = score_candidates(pd.DataFrame(rows), "2026-07")
+
+        self.assertTrue(scored["frequency_factor"].between(0.90, 1.10).all())
+        self.assertTrue(scored["frequency_factor_clamped"].between(0.90, 1.10).all())
+
+    def test_same_candidate_cooldown_beats_frequency(self):
+        rows = [
+            row(f"2025-{month:02d}", "blood_money", primary_category="non_role")
+            for month in range(1, 7)
+        ]
+        rows.append(row("2026-06", "blood_money", primary_category="non_role"))
+        scored = scored_by_candidate(rows, "2026-07")
+
+        self.assertEqual(scored.loc["blood_money", "same_candidate_cooldown_factor"], 0.3)
+        self.assertLessEqual(scored.loc["blood_money", "frequency_factor"], 1.1)
+
+    def test_blood_money_recent_cooldown_does_not_cool_other_non_roles(self):
+        scored = scored_by_candidate(
+            [
+                row("2025-10", "call_to_arms", primary_category="non_role"),
+                row("2025-11", "races", primary_category="non_role"),
+                row("2025-12", "free_roam", primary_category="non_role"),
+                row("2026-06", "blood_money", primary_category="non_role"),
+            ],
+            "2026-07",
+        )
+
+        self.assertEqual(scored.loc["blood_money", "same_candidate_cooldown_factor"], 0.3)
+        self.assertGreater(scored.loc["call_to_arms", "same_candidate_cooldown_factor"], 0.3)
+        self.assertGreater(scored.loc["races", "same_candidate_cooldown_factor"], 0.3)
+        self.assertGreater(scored.loc["free_roam", "same_candidate_cooldown_factor"], 0.3)
+
+    def test_non_role_context_factor_is_clamped(self):
+        role_heavy = scored_by_candidate(
+            [
+                row("2026-04", "bounty_hunter"),
+                row("2026-05", "collector"),
+                row("2026-06", "trader"),
+            ],
+            "2026-07",
+        )
+        non_role_heavy = scored_by_candidate(
+            [
+                row("2026-04", "blood_money", primary_category="non_role"),
+                row("2026-05", "call_to_arms", primary_category="non_role"),
+                row("2026-06", "races", primary_category="non_role"),
+            ],
+            "2026-07",
+        )
+
+        self.assertLessEqual(role_heavy.loc["call_to_arms", "non_role_context_factor"], 1.2)
+        self.assertGreaterEqual(non_role_heavy.loc["call_to_arms", "non_role_context_factor"], 0.85)
+
+    def test_all_role_adds_role_pressure_without_resetting_role_direct(self):
+        scored = scored_by_candidate(
+            [
+                row("2025-01", "bounty_hunter"),
+                row(
+                    "2026-06",
+                    "all_role",
+                    primary_category="all_role",
+                    is_all_role=True,
+                    all_role_components=ALL_ROLE_COMPONENTS,
+                ),
+            ],
+            "2026-07",
+        )
+
+        self.assertEqual(scored.loc["bounty_hunter", "months_since_direct"], 18)
+        self.assertEqual(scored.loc["bounty_hunter", "direct_count"], 1)
+        self.assertGreater(scored.loc["call_to_arms", "recent_role_pressure"], 0)
+
+    def test_mixed_adds_weighted_role_and_non_role_pressure(self):
+        scored = scored_by_candidate(
+            [
+                row(
+                    "2026-06",
+                    "bounty_hunter",
+                    primary_category="both",
+                    is_mixed=True,
+                    mixed_components="bounty_hunter|call_to_arms",
+                )
+            ],
+            "2026-07",
+        )
+
+        self.assertGreater(scored.loc["call_to_arms", "recent_role_pressure"], 0)
+        self.assertGreater(scored.loc["call_to_arms", "recent_non_role_pressure"], 0)
+        self.assertLess(scored.loc["call_to_arms", "recent_role_pressure"], 1.0)
+        self.assertLess(scored.loc["call_to_arms", "recent_non_role_pressure"], 1.0)
+
+    def test_other_non_role_is_capped_as_rare_bucket(self):
+        scored = scored_by_candidate(
+            [
+                row("2024-01", "other_non_role", primary_category="non_role"),
+                row("2026-04", "bounty_hunter"),
+                row("2026-05", "collector"),
+                row("2026-06", "trader"),
+            ],
+            "2026-07",
+        )
+
+        self.assertEqual(scored.loc["other_non_role", "individual_non_role_recency_factor"], 1.0)
+        self.assertLessEqual(scored.loc["other_non_role", "non_role_context_factor"], 1.05)
+        self.assertEqual(scored.loc["other_non_role", "overdue_factor"], 1.0)
+        self.assertLess(scored.loc["other_non_role", "rare_bucket_factor"], 1.0)
+        self.assertGreater(scored.loc["other_non_role", "raw_score"], 0)
+
+    def test_wrong_month_seasonal_candidates_are_excluded_before_context_boost(self):
+        scored = score_candidates(
+            pd.DataFrame(
+                [
+                    row("2026-04", "bounty_hunter"),
+                    row("2026-05", "collector"),
+                    row("2026-06", "trader"),
+                ]
+            ),
+            "2026-07",
+        )
+
+        self.assertNotIn("halloween", set(scored["candidate"]))
+        self.assertNotIn("holiday", set(scored["candidate"]))
 
     def test_prior_strength_default_and_range(self):
         self.assertEqual(CandidateScoringConfig().direct_weight, 1.0)
